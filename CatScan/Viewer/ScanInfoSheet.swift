@@ -23,7 +23,7 @@ struct ScanInfoSheet: View {
                     LabeledContent("Dimensions", value: document.dimensionsString)
                 }
                 Section("Capture") {
-                    LabeledContent("Capture mode", value: document.isDetailCapture ? "Detail (depth fusion)" : "Room (ARKit mesh)")
+                    LabeledContent("Capture mode", value: captureModeLabel)
                     LabeledContent("Colored", value: document.isColored
                         ? "\(Int((document.colorFraction * 100).rounded()))% of vertices"
                         : "No")
@@ -45,7 +45,7 @@ struct ScanInfoSheet: View {
                     }
                 }
             }
-            .navigationTitle("Scan Info")
+            .navigationTitle(document.isMoment ? "Moment Info" : "Scan Info")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -53,5 +53,11 @@ struct ScanInfoSheet: View {
                 }
             }
         }
+    }
+
+    private var captureModeLabel: String {
+        if document.isMoment { return "Moment (volumetric video)" }
+        if document.isDetailCapture { return "Detail (depth fusion)" }
+        return "Room (ARKit mesh)"
     }
 }

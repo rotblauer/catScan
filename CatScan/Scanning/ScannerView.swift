@@ -91,6 +91,11 @@ struct ScannerView: View {
                 onFinished(document)
             }
         }
+        .onChange(of: controller.momentLimitReached) { _, reached in
+            if reached, case .scanning = controller.phase {
+                controller.finishScan(store: store)
+            }
+        }
         .sheet(isPresented: $showOptions) {
             ScanOptionsSheet(colorize: $colorize,
                              classify: $classify,
@@ -145,8 +150,10 @@ struct ScannerView: View {
                     }
                 }
                 Spacer()
-                CircleIconButton(systemImage: controller.overlayMode.systemImage) {
-                    controller.cycleOverlayMode()
+                if scanMode != .moment {
+                    CircleIconButton(systemImage: controller.overlayMode.systemImage) {
+                        controller.cycleOverlayMode()
+                    }
                 }
                 if controller.torchAvailable {
                     CircleIconButton(systemImage: controller.torchOn ? "flashlight.on.fill" : "flashlight.off.fill") {
@@ -248,20 +255,29 @@ struct ScannerView: View {
                 ? "Locked on! Re-scan the areas you want to compare."
                 : "Walk to where the original scan started so CatScan can align to it."
         }
-        return scanMode == .detail
-            ? "Detail mode: aim at your subject — the capture box appears when you start."
-            : "Move slowly and keep the mesh overlay growing."
+        switch scanMode {
+        case .detail:
+            return "Detail mode: aim at your subject — the capture box appears when you start."
+        case .moment:
+            return "Moment mode: film up to 10 seconds of moving 3D — hold steady or orbit slowly."
+        case .room:
+            return "Move slowly and keep the mesh overlay growing."
+        }
     }
 
     private var statsChip: some View {
         HStack(spacing: 14) {
             Label(controller.stats.elapsed.clockString, systemImage: "timer")
-            if scanMode == .detail {
+            switch scanMode {
+            case .moment:
+                Label("\(controller.stats.momentFrames)/\(ScanSessionController.momentMaxFrames) fr", systemImage: "film")
+                Label("\(controller.stats.momentPoints.abbreviated) pts", systemImage: "circle.dotted")
+            case .detail:
                 Label("\((controller.stats.tsdfBricks * 512).abbreviated) vox", systemImage: "cube.fill")
-            } else {
+            case .room:
                 Label("\(controller.stats.faceCount.abbreviated) tris", systemImage: "triangle")
             }
-            if colorize {
+            if colorize, scanMode != .moment {
                 Label("\(controller.stats.colorCellCount.abbreviated) colors", systemImage: "paintpalette")
             }
         }
@@ -382,6 +398,8 @@ struct ScanOptionsSheet: View {
                     if scanModeRaw == ScanMode.detail.rawValue {
                         Text("Detail fuses raw depth frames inside a fixed box for 4–8 mm precision — far finer than ARKit's mesh. " +
                              (DetailVolume(rawValue: detailVolumeRaw) ?? .medium).note)
+                    } else if scanModeRaw == ScanMode.moment.rawValue {
+                        Text("Moment records a short volumetric video — a moving 3D point cloud you can orbit during playback and export as a spatial replay. Up to 10 seconds.")
                     } else {
                         Text("Room uses ARKit's scene mesh — unlimited size, ~2–5 cm features. Switch to Detail for small subjects.")
                     }

@@ -10,6 +10,8 @@ enum ScanMode: String, CaseIterable, Identifiable {
     case room
     /// Our own TSDF depth fusion inside a bounded box — 4–8 mm features.
     case detail
+    /// Volumetric video: colored point-cloud frames at ~15 fps.
+    case moment
 
     var id: String { rawValue }
 
@@ -17,6 +19,7 @@ enum ScanMode: String, CaseIterable, Identifiable {
         switch self {
         case .room: return "Room"
         case .detail: return "Detail"
+        case .moment: return "Moment"
         }
     }
 }
@@ -83,7 +86,12 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
         var elapsed: TimeInterval = 0
         var colorCellCount = 0
         var tsdfBricks = 0
+        var momentFrames = 0
+        var momentPoints = 0
     }
+
+    static let momentFPS: Double = 15
+    static let momentMaxFrames = 150   // 10 seconds
 
     var phase: Phase = .ready
     var stats = LiveStats()
@@ -96,6 +104,9 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
     /// True once ARKit has locked onto a reference scan's world map (always
     /// true when there is no reference).
     var isRelocalized = true
+    /// Set when a Moment hits its length cap; the scanner view reacts by
+    /// finishing the capture.
+    var momentLimitReached = false
 
     @ObservationIgnored let overlay = MeshOverlayRenderer()
     @ObservationIgnored let session = ARSession()
@@ -105,6 +116,10 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
     @ObservationIgnored private var meshAnchors: [UUID: ARMeshAnchor] = [:]
     @ObservationIgnored private var colorStore = SpatialColorStore()
     @ObservationIgnored private var tsdf: TSDFVolume?
+    @ObservationIgnored private var momentFrames: [MomentFrame] = []
+    @ObservationIgnored private var momentPointTotal = 0
+    @ObservationIgnored private var lastMomentCapture: TimeInterval = 0
+    @ObservationIgnored private var momentStartTimestamp: TimeInterval?
     @ObservationIgnored private var isCapturing = false
     @ObservationIgnored private var captureStarted: Date?
     @ObservationIgnored private var lastColorPass: TimeInterval = 0
@@ -156,7 +171,9 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
 
     private func makeConfiguration() -> ARWorldTrackingConfiguration {
         let configuration = ARWorldTrackingConfiguration()
-        if classifyEnabled, DeviceSupport.supportsClassification {
+        if scanMode == .moment {
+            // Moments only need the depth stream; skip mesh reconstruction.
+        } else if classifyEnabled, DeviceSupport.supportsClassification {
             configuration.sceneReconstruction = .meshWithClassification
         } else {
             configuration.sceneReconstruction = .mesh
@@ -222,7 +239,15 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
     /// Session queue. Creates the per-run color store and, in Detail mode, the
     /// TSDF volume placed straight ahead of the camera.
     private func setupCaptureBackend() {
+        momentFrames = []
+        momentPointTotal = 0
+        momentStartTimestamp = nil
+        DispatchQueue.main.async { self.momentLimitReached = false }
         switch scanMode {
+        case .moment:
+            colorStore = SpatialColorStore()
+            tsdf = nil
+            overlay.hideVolumeBox()
         case .room:
             colorStore = SpatialColorStore()
             tsdf = nil
@@ -272,7 +297,13 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
 
     func finishScan(store: ScanStore) {
         Haptics.impact(.heavy)
-        phase = .processing(stage: "Capturing mesh", progress: 0.02)
+        phase = .processing(stage: scanMode == .moment ? "Packing frames" : "Capturing mesh", progress: 0.02)
+
+        // Moments don't need a relocalization map.
+        if scanMode == .moment {
+            captureAndProcess(store: store, worldMapData: nil)
+            return
+        }
 
         // Grab the relocalization map before pausing — groundwork for scan
         // diffing: any two scans with maps can later share a coordinate frame.
@@ -296,6 +327,21 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
             let duration = captureStarted.map { Date().timeIntervalSince($0) } ?? 0
             let colors: SpatialColorStore? = colorizeEnabled ? colorStore : nil
             let simplifyCell = simplifyCellSize
+
+            if scanMode == .moment {
+                let frames = momentFrames
+                guard frames.count >= 5 else {
+                    DispatchQueue.main.async {
+                        self.phase = .failed(message: "That Moment was too short. Hold the shot for at least half a second.",
+                                             isCameraDenied: false)
+                    }
+                    return
+                }
+                Task.detached(priority: .userInitiated) {
+                    await self.processMomentAndSave(frames: frames, store: store)
+                }
+                return
+            }
 
             if let volume = tsdf {
                 Task.detached(priority: .userInitiated) {
@@ -421,6 +467,42 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
                               store: store)
     }
 
+    private func processMomentAndSave(frames: [MomentFrame], store: ScanStore) async {
+        let clip = MomentClip(frames: frames)
+        await MainActor.run {
+            self.phase = .processing(stage: "Packing \(frames.count) frames", progress: 0.3)
+        }
+        let clipData = clip.serialized()
+
+        // A representative middle frame doubles as the library thumbnail
+        // source and the mesh the store expects.
+        let representative = clip.pointMesh(at: frames.count / 2)
+        await MainActor.run {
+            self.phase = .processing(stage: "Rendering preview", progress: 0.8)
+        }
+        let thumbnail = SceneKitSupport.renderThumbnail(mesh: representative,
+                                                        size: CGSize(width: 640, height: 640),
+                                                        mode: .points)
+        do {
+            let name = "Moment " + Date().formatted(date: .abbreviated, time: .shortened)
+            let document = try await store.save(mesh: representative,
+                                                name: name,
+                                                duration: TimeInterval(clip.duration),
+                                                colorFraction: 1,
+                                                captureMode: ScanMode.moment.rawValue,
+                                                ancillaryFiles: ["moment.catmoment": clipData],
+                                                thumbnail: thumbnail)
+            await MainActor.run {
+                self.finishedDocument = document
+            }
+        } catch {
+            await MainActor.run {
+                self.phase = .failed(message: "Couldn't save the Moment: \(error.localizedDescription)",
+                                     isCameraDenied: false)
+            }
+        }
+    }
+
     private func finalizeAndSave(mesh: MeshData,
                                  colorFraction: Float,
                                  duration: TimeInterval,
@@ -532,6 +614,26 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         guard isCapturing else { return }
+
+        if scanMode == .moment {
+            if frame.timestamp - lastMomentCapture >= 1.0 / Self.momentFPS,
+               momentFrames.count < Self.momentMaxFrames,
+               let points = DepthColorSampler.collectPoints(frame: frame) {
+                lastMomentCapture = frame.timestamp
+                let start = momentStartTimestamp ?? frame.timestamp
+                momentStartTimestamp = start
+                momentFrames.append(MomentFrame(time: Float(frame.timestamp - start),
+                                                positions: points.positions,
+                                                colors: points.colors))
+                momentPointTotal += points.positions.count
+                if momentFrames.count >= Self.momentMaxFrames {
+                    DispatchQueue.main.async { self.momentLimitReached = true }
+                }
+            }
+            pushStatsIfNeeded()
+            return
+        }
+
         if colorizeEnabled, frame.timestamp - lastColorPass >= 0.25 {
             lastColorPass = frame.timestamp
             DepthColorSampler.integrate(frame: frame, into: colorStore)
@@ -560,6 +662,8 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
         }
         snapshot.colorCellCount = colorStore.count
         snapshot.tsdfBricks = tsdf?.brickCount ?? 0
+        snapshot.momentFrames = momentFrames.count
+        snapshot.momentPoints = momentPointTotal
         snapshot.elapsed = captureStarted.map { Date().timeIntervalSince($0) } ?? 0
 
         DispatchQueue.main.async {

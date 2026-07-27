@@ -275,6 +275,7 @@ enum SceneKitSupport {
         scene.rootNode.addChildNode(fill)
     }
 
+    /// Camera fitted to a bounding extent, aimed at the origin.
     static func makeCamera(extent: SIMD3<Float>) -> SCNNode {
         let camera = SCNCamera()
         camera.fieldOfView = 55

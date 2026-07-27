@@ -11,6 +11,7 @@ struct ModelViewerView: View {
 
     @State private var mesh: MeshData?
     @State private var diff: (added: [Bool], removed: MeshData)?
+    @State private var momentClip: MomentClip?
     @State private var loadError: String?
     @State private var mode: ViewerDisplayMode = .shaded
     @State private var proxy = SCNViewProxy()
@@ -27,6 +28,7 @@ struct ModelViewerView: View {
     @State private var preparingAR = false
 
     @State private var turntable: TurntableRenderer?
+    @State private var momentVideo: MomentVideoRenderer?
     @State private var showTurntable = false
 
     /// Live copy so renames show immediately.
@@ -36,7 +38,9 @@ struct ModelViewerView: View {
 
     var body: some View {
         ZStack {
-            if let mesh {
+            if let momentClip {
+                MomentPlayerView(clip: momentClip, colorScheme: colorScheme, proxy: proxy)
+            } else if let mesh, !currentDocument.isMoment {
                 SceneKitViewer(mesh: mesh, mode: mode, colorScheme: colorScheme, proxy: proxy, diff: diff)
                     .ignoresSafeArea(edges: .bottom)
             } else if let loadError {
@@ -82,7 +86,11 @@ struct ModelViewerView: View {
             }
         }
         .safeAreaInset(edge: .bottom) {
-            if mesh != nil { controls }
+            if momentClip != nil {
+                momentControls
+            } else if mesh != nil, !currentDocument.isMoment {
+                controls
+            }
         }
         .task { await loadMesh() }
         .sheet(isPresented: $showExport) {
@@ -95,9 +103,13 @@ struct ModelViewerView: View {
                 .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showTurntable) {
-            TurntableProgressSheet(renderer: turntable)
-                .presentationDetents([.height(190)])
-                .interactiveDismissDisabled()
+            RenderProgressSheet(title: currentDocument.isMoment ? "Rendering Spatial Replay" : "Rendering Turntable",
+                                progress: turntable?.progress ?? momentVideo?.progress ?? 0) {
+                turntable?.cancel()
+                momentVideo?.cancel()
+            }
+            .presentationDetents([.height(190)])
+            .interactiveDismissDisabled()
         }
         .fullScreenCover(isPresented: $showQuickLook) {
             if let quickLookURL {
@@ -153,6 +165,41 @@ struct ModelViewerView: View {
         .background(.ultraThinMaterial)
     }
 
+    private var momentControls: some View {
+        HStack(spacing: 0) {
+            viewerAction("Photo", systemImage: "camera.fill", action: saveSnapshot)
+            viewerAction("Video", systemImage: "arrow.triangle.2.circlepath.camera.fill", action: saveMomentVideo)
+            viewerAction("Info", systemImage: "info.circle") { showInfo = true }
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+        .background(.ultraThinMaterial)
+    }
+
+    private func saveMomentVideo() {
+        guard let momentClip else { return }
+        let renderer = MomentVideoRenderer()
+        momentVideo = renderer
+        showTurntable = true
+        Task {
+            do {
+                let url = try await renderer.render(clip: momentClip)
+                try await PhotoSaver.save(videoAt: url)
+                try? FileManager.default.removeItem(at: url)
+                showTurntable = false
+                Haptics.success()
+                toast = ToastState(message: "Spatial replay saved to Photos")
+            } catch is CancellationError {
+                showTurntable = false
+            } catch {
+                showTurntable = false
+                toast = ToastState(message: error.localizedDescription, isError: true)
+            }
+            momentVideo = nil
+        }
+    }
+
     private func viewerAction(_ title: String, systemImage: String, busy: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 4) {
@@ -175,10 +222,16 @@ struct ModelViewerView: View {
     // MARK: - Actions
 
     private func loadMesh() async {
-        guard mesh == nil else { return }
+        guard mesh == nil, momentClip == nil else { return }
         let doc = document
         let store = self.store
         do {
+            if doc.isMoment {
+                momentClip = try await Task.detached(priority: .userInitiated) {
+                    try store.loadMomentClip(for: doc)
+                }.value
+                return
+            }
             let loaded = try await Task.detached(priority: .userInitiated) {
                 try store.loadMesh(for: doc)
             }.value
@@ -303,21 +356,23 @@ struct ClassificationLegend: View {
     }
 }
 
-struct TurntableProgressSheet: View {
-    let renderer: TurntableRenderer?
+struct RenderProgressSheet: View {
+    let title: String
+    let progress: Double
+    let onCancel: () -> Void
 
     var body: some View {
         VStack(spacing: 16) {
-            Text("Rendering Turntable")
+            Text(title)
                 .font(.headline)
-            ProgressView(value: renderer?.progress ?? 0)
+            ProgressView(value: progress)
                 .progressViewStyle(.linear)
                 .frame(width: 240)
-            Text("\(Int((renderer?.progress ?? 0) * 100))%")
+            Text("\(Int(progress * 100))%")
                 .font(.footnote.monospacedDigit())
                 .foregroundStyle(.secondary)
             Button("Cancel", role: .cancel) {
-                renderer?.cancel()
+                onCancel()
             }
         }
         .padding()

@@ -17,6 +17,8 @@ Scan the world, view it in 3D, export to standard formats, and share to Photos a
 
 - **LiDAR mesh scanning** — ARKit scene reconstruction with a live mesh overlay, tracking-quality hints, coaching overlay, torch toggle, and live triangle/color statistics while you scan.
 - **Detail capture mode** — a second engine for small subjects: raw LiDAR depth frames are fused into a sparse TSDF voxel grid (4–8 mm voxels, chosen by capture volume: 0.5 m / 1 m / 2 m) and the surface is extracted with Surface Nets, recovering far finer geometry than ARKit's ~2–5 cm mesh. A teal box shows the capture volume; everything stays on-device.
+- **3D Moments (volumetric video)** — a third capture mode records up to 10 seconds of colored depth point clouds at 15 fps. Play them back from any angle with orbit + scrub controls, and export a "spatial replay" video to Photos where the clip plays while the camera orbits it — footage from angles the phone never stood at.
+- **Scan diffing** — any scan with a saved world map offers **Rescan & Compare**: the new session relocalizes into the original's coordinate frame, and the result gets a Changes view mode — green where geometry appeared, red ghost where it disappeared, with measured areas. Rental move-out documentation, renovation progress, "what moved?".
 - **True color capture** — while scanning, every LiDAR depth frame is unprojected into world space and paired with the camera image, accumulating a quality-weighted sparse voxel color field. After the scan, each mesh vertex is painted from that field, so scans come out in color without any cloud processing.
 - **Live coverage heatmap** — a scanner overlay mode that paints the mesh by color-capture quality: green where the camera has good samples, red where it has never looked. Cycle Off → Mesh → Coverage with the eye button and "paint the room green" for gap-free color.
 - **Surface classification** — optionally labels faces as wall / floor / ceiling / table / seat / window / door, with a dedicated color-coded view mode.
@@ -61,10 +63,12 @@ CatScan/
 │                   SpatialColorStore (sparse voxel color field)
 │                   MeshBuilder (merge → weld → color → clean → normals → simplify)
 │                   TSDFVolume (Detail mode: sparse TSDF fusion + Surface Nets)
+│                   ScanDiff (rescan comparison: occupancy diff + speckle filter)
 │                   MeshOverlayRenderer (live wireframe / coverage heatmap / volume box)
 │                   ScannerView + ScannerSceneView (ARSCNView scanner UI)
-├── Viewer/         SceneKit viewer + display modes, turntable video renderer,
-│                   AR Quick Look presentation, scan info
+├── Viewer/         SceneKit viewer + display modes, Moment player + spatial
+│                   replay renderer, turntable video renderer, AR Quick Look,
+│                   scan info
 ├── Export/         OBJ / PLY / STL / GLB / USDZ / HTML writers, export UI, share sheet
 └── Support/        Photos saving, toasts, haptics, formatting helpers
 ```

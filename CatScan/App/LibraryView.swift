@@ -113,7 +113,8 @@ struct LibraryView: View {
         #if DEBUG
         .task {
             DebugAutomation.runIfRequested(store: store)
-            if DebugAutomation.wantsOpenFirst, let first = store.scans.first, path.isEmpty {
+            if DebugAutomation.wantsOpenFirst, path.isEmpty,
+               let first = store.scans.first(where: { $0.isMoment }) ?? store.scans.first {
                 path.append(first)
             }
         }
@@ -274,7 +275,12 @@ struct ScanCard: View {
             HStack {
                 Text(document.createdAt, format: .dateTime.month(.abbreviated).day())
                 Spacer()
-                Text("\(document.faceCount.abbreviated) tris")
+                if document.isMoment {
+                    Label(String(format: "%.1f s", document.duration), systemImage: "play.fill")
+                        .labelStyle(.titleAndIcon)
+                } else {
+                    Text("\(document.faceCount.abbreviated) tris")
+                }
             }
             .font(.caption2)
             .foregroundStyle(.secondary)

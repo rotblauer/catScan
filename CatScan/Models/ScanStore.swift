@@ -43,6 +43,16 @@ final class ScanStore {
         FileManager.default.fileExists(atPath: worldMapURL(for: document).path)
     }
 
+    // MARK: - Moments
+
+    func momentURL(for document: ScanDocument) -> URL {
+        folderURL(for: document.id).appendingPathComponent("moment.catmoment")
+    }
+
+    func loadMomentClip(for document: ScanDocument) throws -> MomentClip {
+        try MomentClip.load(from: momentURL(for: document))
+    }
+
     // MARK: - Diff artifacts
 
     func hasDiffFiles(for document: ScanDocument) -> Bool {

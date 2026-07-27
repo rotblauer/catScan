@@ -7,18 +7,51 @@ import simd
 /// camera intrinsics and paired with the camera image color at the same spot.
 enum DepthColorSampler {
 
+    /// One frame's colored points, collected instead of integrated — the
+    /// capture path for volumetric Moments. `pixelStride` subsamples the depth
+    /// map (2 → ~12k points per frame).
+    static func collectPoints(frame: ARFrame,
+                              pixelStride: Int = 2,
+                              maxDepth: Float = 3.0) -> (positions: [SIMD3<Float>], colors: [SIMD4<UInt8>])? {
+        var positions: [SIMD3<Float>] = []
+        var colors: [SIMD4<UInt8>] = []
+        positions.reserveCapacity(16_384)
+        colors.reserveCapacity(16_384)
+        let collected = withPixels(frame: frame) { point, r, g, b, _, depth in
+            if depth <= maxDepth {
+                positions.append(point)
+                colors.append(SIMD4(r, g, b, 255))
+            }
+        } stride: { pixelStride }
+        guard collected else { return nil }
+        return (positions, colors)
+    }
+
     static func integrate(frame: ARFrame, into store: SpatialColorStore) {
-        guard let sceneDepth = frame.smoothedSceneDepth ?? frame.sceneDepth else { return }
+        _ = withPixels(frame: frame) { point, r, g, b, quality, _ in
+            store.integrate(point: point, r: r, g: g, b: b, quality: quality)
+        } stride: { 1 }
+    }
+
+    /// Shared unproject-and-color loop. Calls `body` for every valid depth
+    /// pixel with the world position, RGB, quality score, and depth. Returns
+    /// false when the frame lacks usable depth/image buffers.
+    @discardableResult
+    private static func withPixels(frame: ARFrame,
+                                   body: (SIMD3<Float>, UInt8, UInt8, UInt8, Float, Float) -> Void,
+                                   stride pixelStrideProvider: () -> Int) -> Bool {
+        guard let sceneDepth = frame.smoothedSceneDepth ?? frame.sceneDepth else { return false }
         let depthMap = sceneDepth.depthMap
         let image = frame.capturedImage
 
-        guard CVPixelBufferGetPixelFormatType(depthMap) == kCVPixelFormatType_DepthFloat32 else { return }
+        guard CVPixelBufferGetPixelFormatType(depthMap) == kCVPixelFormatType_DepthFloat32 else { return false }
+        let pixelStride = max(1, pixelStrideProvider())
         let imageFormat = CVPixelBufferGetPixelFormatType(image)
         let fullRange: Bool
         switch imageFormat {
         case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange: fullRange = true
         case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange: fullRange = false
-        default: return
+        default: return false
         }
 
         CVPixelBufferLockBaseAddress(depthMap, .readOnly)
@@ -34,7 +67,7 @@ enum DepthColorSampler {
         let depthWidth = CVPixelBufferGetWidth(depthMap)
         let depthHeight = CVPixelBufferGetHeight(depthMap)
         guard depthWidth > 0, depthHeight > 0,
-              let depthBase = CVPixelBufferGetBaseAddress(depthMap) else { return }
+              let depthBase = CVPixelBufferGetBaseAddress(depthMap) else { return false }
         let depthRowBytes = CVPixelBufferGetBytesPerRow(depthMap)
 
         var confBase: UnsafeRawPointer?
@@ -47,7 +80,7 @@ enum DepthColorSampler {
         let imageWidth = CVPixelBufferGetWidth(image)
         let imageHeight = CVPixelBufferGetHeight(image)
         guard let lumaBase = CVPixelBufferGetBaseAddressOfPlane(image, 0),
-              let chromaBase = CVPixelBufferGetBaseAddressOfPlane(image, 1) else { return }
+              let chromaBase = CVPixelBufferGetBaseAddressOfPlane(image, 1) else { return false }
         let lumaRowBytes = CVPixelBufferGetBytesPerRowOfPlane(image, 0)
         let chromaRowBytes = CVPixelBufferGetBytesPerRowOfPlane(image, 1)
         let luma = lumaBase.assumingMemoryBound(to: UInt8.self)
@@ -63,16 +96,16 @@ enum DepthColorSampler {
         let fy = intrinsics[1][1] * sy
         let cx = intrinsics[2][0] * sx
         let cy = intrinsics[2][1] * sy
-        guard fx > 0, fy > 0 else { return }
+        guard fx > 0, fy > 0 else { return false }
         let cameraTransform = frame.camera.transform
 
         let imgScaleX = Float(imageWidth) / Float(depthWidth)
         let imgScaleY = Float(imageHeight) / Float(depthHeight)
 
-        for v in 0..<depthHeight {
+        for v in Swift.stride(from: 0, to: depthHeight, by: pixelStride) {
             let depthRow = depthBase.advanced(by: v * depthRowBytes).assumingMemoryBound(to: Float32.self)
             let confRow = confBase.map { $0.advanced(by: v * confRowBytes).assumingMemoryBound(to: UInt8.self) }
-            for u in 0..<depthWidth {
+            for u in Swift.stride(from: 0, to: depthWidth, by: pixelStride) {
                 let depth = depthRow[u]
                 guard depth.isFinite, depth > 0.15, depth < 5.0 else { continue }
 
@@ -112,12 +145,14 @@ enum DepthColorSampler {
                 }
 
                 let quality = confidenceWeight * min(2.5, 1.0 / max(depth, 0.4))
-                store.integrate(point: SIMD3(world.x, world.y, world.z),
-                                r: UInt8(min(255, max(0, r))),
-                                g: UInt8(min(255, max(0, g))),
-                                b: UInt8(min(255, max(0, b))),
-                                quality: quality)
+                body(SIMD3(world.x, world.y, world.z),
+                     UInt8(min(255, max(0, r))),
+                     UInt8(min(255, max(0, g))),
+                     UInt8(min(255, max(0, b))),
+                     quality,
+                     depth)
             }
         }
+        return true
     }
 }

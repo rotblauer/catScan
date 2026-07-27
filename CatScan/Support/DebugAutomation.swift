@@ -140,7 +140,90 @@ enum DebugAutomation {
         lines.append(contentsOf: tsdfSphereTest(renderInto: modesDir))
         lines.append(contentsOf: tsdfPlaneTest())
         lines.append(contentsOf: await scanDiffTest(store: store, renderInto: modesDir))
+        lines.append(contentsOf: await momentTest(store: store, renderInto: modesDir))
 
+        return lines
+    }
+
+    /// Moment check: build a synthetic animated clip (rotating sample points),
+    /// round-trip it through serialization and the store, render frames, and
+    /// produce a spatial-replay video into Photos.
+    private static func momentTest(store: ScanStore, renderInto directory: URL) async -> [String] {
+        let sample = SampleMeshFactory.yarnBall()
+        var basePositions: [SIMD3<Float>] = []
+        var baseColors: [SIMD4<UInt8>] = []
+        for i in Swift.stride(from: 0, to: sample.vertexCount, by: 3) {
+            basePositions.append(sample.positions[i])
+            baseColors.append(sample.colors[i])
+        }
+        let (lo, hi) = sample.bounds()
+        let center = (lo + hi) * 0.5
+
+        var frames: [MomentFrame] = []
+        for f in 0..<24 {
+            let angle = Float(f) * 0.09
+            let bob = 0.02 * sin(Float(f) * 0.5)
+            let (s, c) = (sin(angle), cos(angle))
+            let rotated = basePositions.map { p -> SIMD3<Float> in
+                let d = p - center
+                return center + SIMD3(c * d.x + s * d.z, d.y + bob, -s * d.x + c * d.z)
+            }
+            frames.append(MomentFrame(time: Float(f) / 15, positions: rotated, colors: baseColors))
+        }
+        let clip = MomentClip(frames: frames)
+
+        var lines: [String] = []
+        do {
+            let reloaded = try MomentClip.load(from: clip.serialized())
+            let framesOK = reloaded.frames.count == clip.frames.count
+                && reloaded.totalPoints == clip.totalPoints
+                && abs(reloaded.duration - clip.duration) < 0.001
+            let firstPoint = reloaded.frames[0].positions[0]
+            let pointOK = simd_length(firstPoint - frames[0].positions[0]) < 1e-6
+            lines.append("moment-roundtrip: \(framesOK && pointOK ? "ok" : "FAIL") frames=\(reloaded.frames.count) points=\(reloaded.totalPoints) duration=\(String(format: "%.2f", reloaded.duration))s")
+        } catch {
+            lines.append("moment-roundtrip: FAIL \(error)")
+        }
+
+        for index in [0, 12] {
+            if let image = SceneKitSupport.renderThumbnail(mesh: clip.pointMesh(at: index),
+                                                           size: CGSize(width: 480, height: 480),
+                                                           mode: .points),
+               let png = image.pngData() {
+                try? png.write(to: directory.appendingPathComponent("moment-frame-\(index).png"))
+                lines.append("moment-frame-\(index): ok")
+            } else {
+                lines.append("moment-frame-\(index): FAIL")
+            }
+        }
+
+        do {
+            let renderer = MomentVideoRenderer()
+            let url = try await renderer.render(clip: clip,
+                                                size: CGSize(width: 360, height: 360),
+                                                fps: 12,
+                                                loops: 1)
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            try await PhotoSaver.save(videoAt: url)
+            lines.append("moment-video: ok bytes=\((attributes?[.size] as? Int) ?? -1)")
+        } catch {
+            lines.append("moment-video: FAIL \(error)")
+        }
+
+        do {
+            let representative = clip.pointMesh(at: frames.count / 2)
+            let document = try await store.save(mesh: representative,
+                                                name: "Moment AutoTest",
+                                                duration: TimeInterval(clip.duration),
+                                                colorFraction: 1,
+                                                captureMode: ScanMode.moment.rawValue,
+                                                ancillaryFiles: ["moment.catmoment": clip.serialized()],
+                                                thumbnail: nil)
+            let loaded = try store.loadMomentClip(for: document)
+            lines.append("moment-store: \(loaded.frames.count == clip.frames.count && document.isMoment ? "ok" : "FAIL")")
+        } catch {
+            lines.append("moment-store: FAIL \(error)")
+        }
         return lines
     }
 
