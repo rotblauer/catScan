@@ -12,6 +12,8 @@ struct ScannerSceneView: UIViewRepresentable {
     let colorize: Bool
     let classify: Bool
     let simplifyCell: Float?
+    let scanMode: ScanMode
+    let detailVolume: DetailVolume
 
     func makeUIView(context: Context) -> ARSCNView {
         let view = ARSCNView(frame: .zero)
@@ -26,6 +28,8 @@ struct ScannerSceneView: UIViewRepresentable {
         controller.colorizeEnabled = colorize
         controller.classifyEnabled = classify
         controller.simplifyCellSize = simplifyCell
+        controller.scanMode = scanMode
+        controller.detailVolume = detailVolume
         controller.startSession()
 
         let coaching = ARCoachingOverlayView()

@@ -23,6 +23,7 @@ struct ScanInfoSheet: View {
                     LabeledContent("Dimensions", value: document.dimensionsString)
                 }
                 Section("Capture") {
+                    LabeledContent("Capture mode", value: document.isDetailCapture ? "Detail (depth fusion)" : "Room (ARKit mesh)")
                     LabeledContent("Colored", value: document.isColored
                         ? "\(Int((document.colorFraction * 100).rounded()))% of vertices"
                         : "No")

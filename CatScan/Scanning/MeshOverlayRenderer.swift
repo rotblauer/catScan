@@ -29,8 +29,11 @@ final class MeshOverlayRenderer {
         }
     }
 
-    /// Parent of all per-anchor nodes; added to the scanner scene on main.
+    /// Parent of the overlay content; added to the scanner scene on main.
     let rootNode = SCNNode()
+    /// Per-anchor mesh nodes live here so mode .off can hide them while the
+    /// Detail-mode capture volume box stays visible.
+    private let anchorContainer = SCNNode()
 
     /// Quality at (and above) which a vertex counts as fully covered.
     /// A high-confidence sample from ~0.9 m reaches this.
@@ -42,13 +45,18 @@ final class MeshOverlayRenderer {
 
     // Main-thread-only state.
     private var nodes: [UUID: SCNNode] = [:]
+    private var volumeBoxNode: SCNNode?
+
+    init() {
+        rootNode.addChildNode(anchorContainer)
+    }
 
     // MARK: - Session-queue API
 
     func setMode(_ newMode: Mode, anchors: [ARMeshAnchor], store: SpatialColorStore?) {
         mode = newMode
         DispatchQueue.main.async {
-            self.rootNode.isHidden = (newMode == .off)
+            self.anchorContainer.isHidden = (newMode == .off)
         }
         guard newMode != .off else { return }
         lastBuildTimes.removeAll()
@@ -88,7 +96,7 @@ final class MeshOverlayRenderer {
             } else {
                 node = SCNNode()
                 self.nodes[id] = node
-                self.rootNode.addChildNode(node)
+                self.anchorContainer.addChildNode(node)
             }
             node.simdTransform = transform
             node.geometry = geometry
@@ -122,7 +130,56 @@ final class MeshOverlayRenderer {
                 node.removeFromParentNode()
             }
             self.nodes.removeAll()
+            self.volumeBoxNode?.removeFromParentNode()
+            self.volumeBoxNode = nil
         }
+    }
+
+    // MARK: - Detail-mode capture volume box
+
+    func showVolumeBox(center: SIMD3<Float>, size: Float) {
+        let geometry = Self.boxLineGeometry(size: size)
+        DispatchQueue.main.async {
+            self.volumeBoxNode?.removeFromParentNode()
+            let node = SCNNode(geometry: geometry)
+            node.simdPosition = center
+            self.rootNode.addChildNode(node)
+            self.volumeBoxNode = node
+        }
+    }
+
+    func hideVolumeBox() {
+        DispatchQueue.main.async {
+            self.volumeBoxNode?.removeFromParentNode()
+            self.volumeBoxNode = nil
+        }
+    }
+
+    static func boxLineGeometry(size: Float) -> SCNGeometry {
+        let h = size / 2
+        var corners: [SIMD3<Float>] = []
+        for z: Float in [-h, h] {
+            for y: Float in [-h, h] {
+                for x: Float in [-h, h] {
+                    corners.append(SIMD3(x, y, z))
+                }
+            }
+        }
+        // Corner index bits: x = 1, y = 2, z = 4.
+        let edges: [UInt32] = [
+            0, 1, 2, 3, 4, 5, 6, 7,        // x-parallel
+            0, 2, 1, 3, 4, 6, 5, 7,        // y-parallel
+            0, 4, 1, 5, 2, 6, 3, 7,        // z-parallel
+        ]
+        let element = SCNGeometryElement(indices: edges, primitiveType: .line)
+        let geometry = SCNGeometry(sources: [SceneKitSupport.vertexSource(corners)], elements: [element])
+        let material = SCNMaterial()
+        material.lightingModel = .constant
+        material.diffuse.contents = UIColor(red: 0.30, green: 0.90, blue: 0.80, alpha: 1)
+        material.transparency = 0.9
+        material.isDoubleSided = true
+        geometry.materials = [material]
+        return geometry
     }
 
     // MARK: - Geometry builders (pure functions; reused by DebugAutomation)

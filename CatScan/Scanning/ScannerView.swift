@@ -45,8 +45,12 @@ struct ScannerView: View {
     @AppStorage("catscan.colorize") private var colorize = true
     @AppStorage("catscan.classify") private var classify = true
     @AppStorage("catscan.detail") private var detailRaw = MeshDetail.maximum.rawValue
+    @AppStorage("catscan.scanmode") private var scanModeRaw = ScanMode.room.rawValue
+    @AppStorage("catscan.detailvolume") private var detailVolumeRaw = DetailVolume.medium.rawValue
 
     private var detail: MeshDetail { MeshDetail(rawValue: detailRaw) ?? .maximum }
+    private var scanMode: ScanMode { ScanMode(rawValue: scanModeRaw) ?? .room }
+    private var detailVolume: DetailVolume { DetailVolume(rawValue: detailVolumeRaw) ?? .medium }
 
     var body: some View {
         ZStack {
@@ -54,7 +58,9 @@ struct ScannerView: View {
                 ScannerSceneView(controller: controller,
                                  colorize: colorize,
                                  classify: classify,
-                                 simplifyCell: detail.cellSize)
+                                 simplifyCell: detail.cellSize,
+                                 scanMode: scanMode,
+                                 detailVolume: detailVolume)
                     .ignoresSafeArea()
             } else {
                 Color.black.ignoresSafeArea()
@@ -78,12 +84,18 @@ struct ScannerView: View {
             }
         }
         .sheet(isPresented: $showOptions) {
-            ScanOptionsSheet(colorize: $colorize, classify: $classify, detailRaw: $detailRaw)
+            ScanOptionsSheet(colorize: $colorize,
+                             classify: $classify,
+                             detailRaw: $detailRaw,
+                             scanModeRaw: $scanModeRaw,
+                             detailVolumeRaw: $detailVolumeRaw)
                 .presentationDetents([.medium, .large])
                 .onDisappear {
                     controller.applySettingsAndRestart(colorize: colorize,
                                                        classify: classify,
-                                                       simplifyCell: detail.cellSize)
+                                                       simplifyCell: detail.cellSize,
+                                                       mode: scanMode,
+                                                       volume: detailVolume)
                 }
         }
         .alert("Discard this scan?", isPresented: $confirmDiscard) {
@@ -188,8 +200,11 @@ struct ScannerView: View {
                 .padding(.bottom, 30)
             } else {
                 VStack(spacing: 14) {
-                    Text("Move slowly and keep the mesh overlay growing.")
+                    Text(scanMode == .detail
+                         ? "Detail mode: aim at your subject — the capture box appears when you start."
+                         : "Move slowly and keep the mesh overlay growing.")
                         .font(.footnote)
+                        .multilineTextAlignment(.center)
                         .foregroundStyle(.white.opacity(0.85))
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
@@ -213,7 +228,11 @@ struct ScannerView: View {
     private var statsChip: some View {
         HStack(spacing: 14) {
             Label(controller.stats.elapsed.clockString, systemImage: "timer")
-            Label("\(controller.stats.faceCount.abbreviated) tris", systemImage: "triangle")
+            if scanMode == .detail {
+                Label("\((controller.stats.tsdfBricks * 512).abbreviated) vox", systemImage: "cube.fill")
+            } else {
+                Label("\(controller.stats.faceCount.abbreviated) tris", systemImage: "triangle")
+            }
             if colorize {
                 Label("\(controller.stats.colorCellCount.abbreviated) colors", systemImage: "paintpalette")
             }
@@ -308,10 +327,38 @@ struct ScanOptionsSheet: View {
     @Binding var colorize: Bool
     @Binding var classify: Bool
     @Binding var detailRaw: String
+    @Binding var scanModeRaw: String
+    @Binding var detailVolumeRaw: String
 
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Picker("Capture mode", selection: $scanModeRaw) {
+                        ForEach(ScanMode.allCases) { mode in
+                            Text(mode.label).tag(mode.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    if scanModeRaw == ScanMode.detail.rawValue {
+                        Picker("Volume", selection: $detailVolumeRaw) {
+                            ForEach(DetailVolume.allCases) { volume in
+                                Text(volume.label).tag(volume.rawValue)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                    }
+                } header: {
+                    Text("Capture mode")
+                } footer: {
+                    if scanModeRaw == ScanMode.detail.rawValue {
+                        Text("Detail fuses raw depth frames inside a fixed box for 4–8 mm precision — far finer than ARKit's mesh. " +
+                             (DetailVolume(rawValue: detailVolumeRaw) ?? .medium).note)
+                    } else {
+                        Text("Room uses ARKit's scene mesh — unlimited size, ~2–5 cm features. Switch to Detail for small subjects.")
+                    }
+                }
+
                 Section {
                     Toggle("Capture colors", isOn: $colorize)
                 } footer: {

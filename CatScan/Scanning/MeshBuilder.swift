@@ -70,12 +70,13 @@ extension ARGeometryElement {
 // MARK: - Processing pipeline
 
 enum ProcessingStage: CaseIterable {
-    case merging, welding, coloring, cleaning, normals, simplifying
+    case merging, welding, extracting, coloring, cleaning, normals, simplifying
 
     var label: String {
         switch self {
         case .merging: return "Merging mesh chunks"
         case .welding: return "Welding vertices"
+        case .extracting: return "Extracting detail surface"
         case .coloring: return "Painting colors"
         case .cleaning: return "Sweeping up floaters"
         case .normals: return "Smoothing normals"
@@ -86,8 +87,9 @@ enum ProcessingStage: CaseIterable {
 
 enum MeshBuilder {
 
-    /// Full post-scan pipeline. Returns the finished mesh and the fraction of
-    /// vertices that received a real (non-inferred) color sample.
+    /// Full post-scan pipeline for Room mode (ARKit mesh anchors). Returns the
+    /// finished mesh and the fraction of vertices that received a real
+    /// (non-inferred) color sample.
     static func process(anchors: [CapturedAnchorMesh],
                         colorStore: SpatialColorStore?,
                         simplifyCellSize: Float?,
@@ -98,6 +100,33 @@ enum MeshBuilder {
         weld(&mesh, epsilon: 0.0025)
         progress(.welding, 1)
 
+        let colorFraction = finish(&mesh,
+                                   colorStore: colorStore,
+                                   simplifyCellSize: simplifyCellSize,
+                                   progress: progress)
+        return (mesh, colorFraction)
+    }
+
+    /// Finishing pipeline for Detail mode. The Surface Nets mesh already shares
+    /// vertices, so no welding is needed.
+    static func processDetail(surface: MeshData,
+                              colorStore: SpatialColorStore?,
+                              simplifyCellSize: Float?,
+                              progress: (ProcessingStage, Double) -> Void) -> (mesh: MeshData, colorFraction: Float) {
+        var mesh = surface
+        let colorFraction = finish(&mesh,
+                                   colorStore: colorStore,
+                                   simplifyCellSize: simplifyCellSize,
+                                   progress: progress)
+        return (mesh, colorFraction)
+    }
+
+    /// Shared tail of both pipelines: colors → floater removal → normals →
+    /// optional decimation.
+    private static func finish(_ mesh: inout MeshData,
+                               colorStore: SpatialColorStore?,
+                               simplifyCellSize: Float?,
+                               progress: (ProcessingStage, Double) -> Void) -> Float {
         var colorFraction: Float = 0
         progress(.coloring, 0)
         if let colorStore, colorStore.count > 0 {
@@ -122,7 +151,7 @@ enum MeshBuilder {
             progress(.simplifying, 1)
         }
 
-        return (mesh, colorFraction)
+        return colorFraction
     }
 
     static let fallbackColor = SIMD4<UInt8>(196, 194, 201, 255)

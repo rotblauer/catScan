@@ -76,6 +76,7 @@ final class ScanStore {
               name: String,
               duration: TimeInterval,
               colorFraction: Float,
+              captureMode: String = "room",
               worldMap: Data? = nil,
               thumbnail: UIImage?) async throws -> ScanDocument {
         let id = UUID()
@@ -105,7 +106,8 @@ final class ScanStore {
             hasClassification: mesh.faceClasses != nil,
             colorFraction: colorFraction,
             deviceModel: deviceModel,
-            fileSizeBytes: meshData.count
+            fileSizeBytes: meshData.count,
+            captureMode: captureMode
         )
         try writeMeta(document)
 

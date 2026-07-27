@@ -137,7 +137,92 @@ enum DebugAutomation {
             lines.append("coverage-render: FAIL")
         }
 
+        lines.append(contentsOf: tsdfSphereTest(renderInto: modesDir))
+        lines.append(contentsOf: tsdfPlaneTest())
+
         return lines
+    }
+
+    /// Detail-mode extraction check: an analytic sphere SDF must come out as a
+    /// closed (zero boundary edges), outward-facing surface whose area matches
+    /// 4πr² — this validates Surface Nets topology, winding, and metric scale.
+    private static func tsdfSphereTest(renderInto directory: URL) -> [String] {
+        let radius: Float = 0.22
+        let volume = TSDFVolume(center: .zero, size: 0.6, voxelSize: 0.005)
+        volume.fill { p in simd_length(p) - radius }
+        var mesh = volume.extractSurface()
+        guard mesh.faceCount > 0 else { return ["tsdf-sphere: FAIL empty"] }
+
+        let boundary = boundaryEdgeCount(mesh)
+        MeshBuilder.recomputeNormals(&mesh)
+        var outward: Float = 0
+        for i in 0..<mesh.vertexCount {
+            outward += simd_dot(simd_normalize(mesh.positions[i]), mesh.normals[i])
+        }
+        outward /= Float(max(1, mesh.vertexCount))
+        let idealArea = 4 * Float.pi * radius * radius
+        let areaRatio = mesh.surfaceArea() / idealArea
+
+        mesh.colors = [SIMD4<UInt8>](repeating: SIMD4(120, 200, 235, 255), count: mesh.vertexCount)
+        if let image = SceneKitSupport.renderThumbnail(mesh: mesh, size: CGSize(width: 500, height: 500)),
+           let png = image.pngData() {
+            try? png.write(to: directory.appendingPathComponent("tsdf-sphere.png"))
+        }
+
+        let ok = boundary == 0 && outward > 0.9 && abs(areaRatio - 1) < 0.05
+        return [String(format: "tsdf-sphere: %@ v=%d f=%d boundary=%d outward=%.3f areaRatio=%.3f",
+                       ok ? "ok" : "FAIL", mesh.vertexCount, mesh.faceCount, boundary, outward, areaRatio)]
+    }
+
+    /// Detail-mode integration check: synthetic depth frames of a flat wall at
+    /// z = -1 m pushed through the real `integrate` ray path must reconstruct a
+    /// plane at the right depth with camera-facing normals.
+    private static func tsdfPlaneTest() -> [String] {
+        let width = 96, height = 72
+        let depth = [Float32](repeating: 1.0, count: width * height)
+        let volume = TSDFVolume(center: SIMD3(0, 0, -1), size: 0.5, voxelSize: 0.006)
+        depth.withUnsafeBufferPointer { buffer in
+            for _ in 0..<12 {
+                volume.integrate(depth: buffer.baseAddress!, depthRowStride: width,
+                                 confidence: nil, confidenceRowStride: 0,
+                                 width: width, height: height,
+                                 fx: 80, fy: 80, cx: Float(width) / 2, cy: Float(height) / 2,
+                                 cameraTransform: matrix_identity_float4x4)
+            }
+        }
+        var mesh = volume.extractSurface()
+        guard mesh.vertexCount > 0 else { return ["tsdf-plane: FAIL empty"] }
+
+        var depthError: Float = 0
+        for p in mesh.positions {
+            depthError += abs(p.z + 1)
+        }
+        depthError /= Float(mesh.vertexCount)
+        MeshBuilder.recomputeNormals(&mesh)
+        var facing: Float = 0
+        for n in mesh.normals {
+            facing += n.z
+        }
+        facing /= Float(max(1, mesh.vertexCount))
+
+        let ok = depthError < 0.004 && facing > 0.9
+        return [String(format: "tsdf-plane: %@ v=%d f=%d meanDepthErr=%.4fm facingCamera=%.3f bricks=%d",
+                       ok ? "ok" : "FAIL", mesh.vertexCount, mesh.faceCount, depthError, facing, volume.brickCount)]
+    }
+
+    private static func boundaryEdgeCount(_ mesh: MeshData) -> Int {
+        var counts = [UInt64: Int](minimumCapacity: mesh.indices.count)
+        var i = 0
+        while i + 2 < mesh.indices.count {
+            let tri = [mesh.indices[i], mesh.indices[i + 1], mesh.indices[i + 2]]
+            for e in 0..<3 {
+                let a = tri[e], b = tri[(e + 1) % 3]
+                let key = (UInt64(min(a, b)) << 32) | UInt64(max(a, b))
+                counts[key, default: 0] += 1
+            }
+            i += 3
+        }
+        return counts.values.filter { $0 == 1 }.count
     }
 }
 #endif

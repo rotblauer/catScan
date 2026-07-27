@@ -4,8 +4,65 @@ import Observation
 import QuartzCore
 import UIKit
 
+/// How a scan captures geometry.
+enum ScanMode: String, CaseIterable, Identifiable {
+    /// ARKit scene reconstruction — whole rooms, ~2–5 cm features.
+    case room
+    /// Our own TSDF depth fusion inside a bounded box — 4–8 mm features.
+    case detail
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .room: return "Room"
+        case .detail: return "Detail"
+        }
+    }
+}
+
+/// Capture volume for Detail mode. Smaller volume → finer voxels.
+enum DetailVolume: String, CaseIterable, Identifiable {
+    case small, medium, large
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .small: return "0.5 m"
+        case .medium: return "1 m"
+        case .large: return "2 m"
+        }
+    }
+
+    var note: String {
+        switch self {
+        case .small: return "Objects — 4 mm voxels."
+        case .medium: return "Furniture — 6 mm voxels."
+        case .large: return "A corner of a room — 8 mm voxels."
+        }
+    }
+
+    var size: Float {
+        switch self {
+        case .small: return 0.5
+        case .medium: return 1.0
+        case .large: return 2.0
+        }
+    }
+
+    var voxelSize: Float {
+        switch self {
+        case .small: return 0.004
+        case .medium: return 0.006
+        case .large: return 0.008
+        }
+    }
+}
+
 /// Owns the ARSession for a scanning run: collects mesh anchors, feeds the
-/// color sampler, and drives the post-scan processing pipeline.
+/// color sampler and (in Detail mode) the TSDF volume, and drives the
+/// post-scan processing pipeline.
 ///
 /// Threading model: ARKit delegate callbacks arrive on `sessionQueue`; all
 /// observable UI state is only mutated on the main queue.
@@ -25,6 +82,7 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
         var faceCount = 0
         var elapsed: TimeInterval = 0
         var colorCellCount = 0
+        var tsdfBricks = 0
     }
 
     var phase: Phase = .ready
@@ -42,10 +100,12 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
 
     // Session-queue-only state.
     @ObservationIgnored private var meshAnchors: [UUID: ARMeshAnchor] = [:]
-    @ObservationIgnored private let colorStore = SpatialColorStore()
+    @ObservationIgnored private var colorStore = SpatialColorStore()
+    @ObservationIgnored private var tsdf: TSDFVolume?
     @ObservationIgnored private var isCapturing = false
     @ObservationIgnored private var captureStarted: Date?
     @ObservationIgnored private var lastColorPass: TimeInterval = 0
+    @ObservationIgnored private var lastTSDFPass: TimeInterval = 0
     @ObservationIgnored private var lastOverlaySweep: TimeInterval = 0
     @ObservationIgnored private var lastStatsPush: TimeInterval = 0
 
@@ -53,6 +113,8 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
     @ObservationIgnored var colorizeEnabled = true
     @ObservationIgnored var classifyEnabled = true
     @ObservationIgnored var simplifyCellSize: Float?
+    @ObservationIgnored var scanMode: ScanMode = .room
+    @ObservationIgnored var detailVolume: DetailVolume = .medium
 
     // MARK: - Session lifecycle
 
@@ -84,11 +146,14 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
         return configuration
     }
 
-    func applySettingsAndRestart(colorize: Bool, classify: Bool, simplifyCell: Float?) {
+    func applySettingsAndRestart(colorize: Bool, classify: Bool, simplifyCell: Float?,
+                                 mode: ScanMode, volume: DetailVolume) {
         guard phase == .ready else { return }
         colorizeEnabled = colorize
         classifyEnabled = classify
         simplifyCellSize = simplifyCell
+        scanMode = mode
+        detailVolume = volume
         if overlayMode == .coverage, !colorize {
             overlayMode = .mesh
         }
@@ -124,6 +189,27 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
         sessionQueue.async {
             self.isCapturing = true
             self.captureStarted = Date()
+            self.setupCaptureBackend()
+        }
+    }
+
+    /// Session queue. Creates the per-run color store and, in Detail mode, the
+    /// TSDF volume placed straight ahead of the camera.
+    private func setupCaptureBackend() {
+        switch scanMode {
+        case .room:
+            colorStore = SpatialColorStore()
+            tsdf = nil
+            overlay.hideVolumeBox()
+        case .detail:
+            // Finer color cells to match the finer geometry.
+            colorStore = SpatialColorStore(cellSize: max(0.004, detailVolume.voxelSize))
+            let camera = session.currentFrame?.camera.transform ?? matrix_identity_float4x4
+            let position = SIMD3<Float>(camera.columns.3.x, camera.columns.3.y, camera.columns.3.z)
+            let forward = -SIMD3<Float>(camera.columns.2.x, camera.columns.2.y, camera.columns.2.z)
+            let center = position + forward * (detailVolume.size / 2 + 0.30)
+            tsdf = TSDFVolume(center: center, size: detailVolume.size, voxelSize: detailVolume.voxelSize)
+            overlay.showVolumeBox(center: center, size: detailVolume.size)
         }
     }
 
@@ -133,8 +219,12 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
         sessionQueue.async {
             self.meshAnchors.removeAll()
             self.colorStore.removeAll()
+            self.tsdf = nil
             self.overlay.clear()
-            if self.isCapturing { self.captureStarted = Date() }
+            if self.isCapturing {
+                self.captureStarted = Date()
+                self.setupCaptureBackend()
+            }
         }
         session.run(makeConfiguration(), options: [.resetTracking, .removeExistingAnchors, .resetSceneReconstruction])
     }
@@ -148,6 +238,7 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
             self.captureStarted = nil
             self.meshAnchors.removeAll()
             self.colorStore.removeAll()
+            self.tsdf = nil
             self.overlay.clear()
         }
         session.run(makeConfiguration(), options: [.resetTracking, .removeExistingAnchors, .resetSceneReconstruction])
@@ -176,11 +267,23 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
 
         sessionQueue.async { [self] in
             isCapturing = false
-            let captured = meshAnchors.values.map { CapturedAnchorMesh(anchor: $0) }
             let duration = captureStarted.map { Date().timeIntervalSince($0) } ?? 0
             let colors: SpatialColorStore? = colorizeEnabled ? colorStore : nil
             let simplifyCell = simplifyCellSize
 
+            if let volume = tsdf {
+                Task.detached(priority: .userInitiated) {
+                    await self.processDetailAndSave(volume: volume,
+                                                    colorStore: colors,
+                                                    simplifyCell: simplifyCell,
+                                                    duration: duration,
+                                                    worldMapData: worldMapData,
+                                                    store: store)
+                }
+                return
+            }
+
+            let captured = meshAnchors.values.map { CapturedAnchorMesh(anchor: $0) }
             guard captured.contains(where: { !$0.indices.isEmpty }) else {
                 DispatchQueue.main.async {
                     self.phase = .failed(message: "No mesh was captured. Point the camera at your surroundings and move around for a few seconds before finishing.",
@@ -205,22 +308,16 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
     private static let stageSpans: [ProcessingStage: (start: Double, span: Double)] = [
         .merging: (0.05, 0.15),
         .welding: (0.20, 0.15),
+        .extracting: (0.05, 0.30),
         .coloring: (0.35, 0.30),
         .cleaning: (0.65, 0.08),
         .normals: (0.73, 0.10),
         .simplifying: (0.83, 0.05),
     ]
 
-    private func processAndSave(captured: [CapturedAnchorMesh],
-                                colorStore: SpatialColorStore?,
-                                simplifyCell: Float?,
-                                duration: TimeInterval,
-                                worldMapData: Data?,
-                                store: ScanStore) async {
+    private func makeProgressReporter() -> (ProcessingStage, Double) -> Void {
         var lastReported = -1.0
-        let (mesh, colorFraction) = MeshBuilder.process(anchors: captured,
-                                                        colorStore: colorStore,
-                                                        simplifyCellSize: simplifyCell) { stage, fraction in
+        return { stage, fraction in
             let (start, span) = Self.stageSpans[stage] ?? (0.5, 0.1)
             let overall = start + span * min(1, max(0, fraction))
             guard overall - lastReported > 0.01 else { return }
@@ -230,11 +327,69 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
                 self.phase = .processing(stage: label, progress: overall)
             }
         }
+    }
 
+    private func processAndSave(captured: [CapturedAnchorMesh],
+                                colorStore: SpatialColorStore?,
+                                simplifyCell: Float?,
+                                duration: TimeInterval,
+                                worldMapData: Data?,
+                                store: ScanStore) async {
+        let (mesh, colorFraction) = MeshBuilder.process(anchors: captured,
+                                                        colorStore: colorStore,
+                                                        simplifyCellSize: simplifyCell,
+                                                        progress: makeProgressReporter())
+        await finalizeAndSave(mesh: mesh,
+                              colorFraction: colorFraction,
+                              duration: duration,
+                              worldMapData: worldMapData,
+                              captureMode: ScanMode.room.rawValue,
+                              emptyMessage: "The captured mesh was empty after cleanup. Try scanning for a bit longer.",
+                              store: store)
+    }
+
+    private func processDetailAndSave(volume: TSDFVolume,
+                                      colorStore: SpatialColorStore?,
+                                      simplifyCell: Float?,
+                                      duration: TimeInterval,
+                                      worldMapData: Data?,
+                                      store: ScanStore) async {
+        let progress = makeProgressReporter()
+        progress(.extracting, 0)
+        let surface = volume.extractSurface()
+        progress(.extracting, 1)
+
+        guard surface.faceCount > 0 else {
+            await MainActor.run {
+                self.phase = .failed(message: "Nothing was captured inside the volume box. Keep your subject inside the teal box and circle it slowly.",
+                                     isCameraDenied: false)
+            }
+            return
+        }
+
+        let (mesh, colorFraction) = MeshBuilder.processDetail(surface: surface,
+                                                              colorStore: colorStore,
+                                                              simplifyCellSize: simplifyCell,
+                                                              progress: progress)
+        await finalizeAndSave(mesh: mesh,
+                              colorFraction: colorFraction,
+                              duration: duration,
+                              worldMapData: worldMapData,
+                              captureMode: ScanMode.detail.rawValue,
+                              emptyMessage: "The detail capture was empty after cleanup. Move a little closer and circle the subject.",
+                              store: store)
+    }
+
+    private func finalizeAndSave(mesh: MeshData,
+                                 colorFraction: Float,
+                                 duration: TimeInterval,
+                                 worldMapData: Data?,
+                                 captureMode: String,
+                                 emptyMessage: String,
+                                 store: ScanStore) async {
         guard mesh.faceCount > 0 else {
             await MainActor.run {
-                self.phase = .failed(message: "The captured mesh was empty after cleanup. Try scanning for a bit longer.",
-                                     isCameraDenied: false)
+                self.phase = .failed(message: emptyMessage, isCameraDenied: false)
             }
             return
         }
@@ -253,6 +408,7 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
                                                 name: name,
                                                 duration: duration,
                                                 colorFraction: colorFraction,
+                                                captureMode: captureMode,
                                                 worldMap: worldMapData,
                                                 thumbnail: thumbnail)
             await MainActor.run {
@@ -322,6 +478,10 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
             lastColorPass = frame.timestamp
             DepthColorSampler.integrate(frame: frame, into: colorStore)
         }
+        if let tsdf, frame.timestamp - lastTSDFPass >= 0.15 {
+            lastTSDFPass = frame.timestamp
+            tsdf.integrate(frame: frame)
+        }
         if frame.timestamp - lastOverlaySweep >= 1.0 {
             lastOverlaySweep = frame.timestamp
             overlay.sweep(anchors: Array(meshAnchors.values), store: colorStore)
@@ -341,6 +501,7 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
             snapshot.faceCount += anchor.geometry.faces.count
         }
         snapshot.colorCellCount = colorStore.count
+        snapshot.tsdfBricks = tsdf?.brickCount ?? 0
         snapshot.elapsed = captureStarted.map { Date().timeIntervalSince($0) } ?? 0
 
         DispatchQueue.main.async {

@@ -16,6 +16,7 @@ Scan the world, view it in 3D, export to standard formats, and share to Photos a
 ## Features
 
 - **LiDAR mesh scanning** — ARKit scene reconstruction with a live mesh overlay, tracking-quality hints, coaching overlay, torch toggle, and live triangle/color statistics while you scan.
+- **Detail capture mode** — a second engine for small subjects: raw LiDAR depth frames are fused into a sparse TSDF voxel grid (4–8 mm voxels, chosen by capture volume: 0.5 m / 1 m / 2 m) and the surface is extracted with Surface Nets, recovering far finer geometry than ARKit's ~2–5 cm mesh. A teal box shows the capture volume; everything stays on-device.
 - **True color capture** — while scanning, every LiDAR depth frame is unprojected into world space and paired with the camera image, accumulating a quality-weighted sparse voxel color field. After the scan, each mesh vertex is painted from that field, so scans come out in color without any cloud processing.
 - **Live coverage heatmap** — a scanner overlay mode that paints the mesh by color-capture quality: green where the camera has good samples, red where it has never looked. Cycle Off → Mesh → Coverage with the eye button and "paint the room green" for gap-free color.
 - **Surface classification** — optionally labels faces as wall / floor / ceiling / table / seat / window / door, with a dedicated color-coded view mode.
@@ -38,7 +39,7 @@ Scan the world, view it in 3D, export to standard formats, and share to Photos a
 ## Getting started
 
 1. Open `CatScan.xcodeproj` in Xcode.
-2. Select the CatScan target → Signing & Capabilities → choose your development team.
+2. For device builds, copy `Config/Local.xcconfig.template` to `Config/Local.xcconfig` and set your team id (kept out of git) — or just pick a team under Signing & Capabilities.
 3. Build and run on your iPhone (or the simulator for the non-scanning features — use **⋯ → Add Sample Scan** to get a model to play with).
 
 CLI build:
@@ -59,7 +60,8 @@ CatScan/
 │                   DepthColorSampler (depth-map → colored world points)
 │                   SpatialColorStore (sparse voxel color field)
 │                   MeshBuilder (merge → weld → color → clean → normals → simplify)
-│                   MeshOverlayRenderer (live wireframe / coverage heatmap)
+│                   TSDFVolume (Detail mode: sparse TSDF fusion + Surface Nets)
+│                   MeshOverlayRenderer (live wireframe / coverage heatmap / volume box)
 │                   ScannerView + ScannerSceneView (ARSCNView scanner UI)
 ├── Viewer/         SceneKit viewer + display modes, turntable video renderer,
 │                   AR Quick Look presentation, scan info
@@ -70,6 +72,7 @@ CatScan/
 Capture design notes:
 
 - ARKit continuously re-tessellates its mesh anchors, so per-anchor color buffers don't survive a scan. CatScan instead keys color samples by **quantized world position** (8 mm voxels): each depth frame contributes ~49k colored points with a quality score (depth-confidence × closeness), and the best sample per voxel wins. At finish, each welded vertex looks up a quality-weighted blend of its 3×3×3 voxel neighborhood, and remaining gaps are filled from mesh-neighbor colors.
+- Detail mode integrates each depth ray into a brick-sparse TSDF: samples march the ±3-voxel truncation band and splat into their 2×2×2 corner neighborhoods with per-corner ray distances and trilinear weights (depth rays can be sparser than the voxel grid, so nearest-corner updates would leave holes). Extraction is Surface Nets — one vertex per sign-changing cell — with triangle winding corrected against the SDF gradient. Debug builds verify the whole path with an analytic sphere (closed topology, exact area) and a synthetic depth wall (reconstructs within 0.1 mm).
 - The USDZ exporter writes a USDA layer with per-vertex `displayColor` primvars inside a spec-compliant stored-zip container (64-byte aligned payloads). SceneKit's built-in USDZ writer was dropped because it silently discards vertex colors.
 - The GLB exporter emits glTF 2.0 with `POSITION` / `NORMAL` / `COLOR_0` accessors and a double-sided material, so vertex-colored scans open correctly in Blender, three.js, MeshLab, and Windows 3D Viewer.
 
