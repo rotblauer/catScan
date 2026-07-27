@@ -165,6 +165,7 @@ struct ModelViewerView: View {
     private func loadMesh() async {
         guard mesh == nil else { return }
         let doc = document
+        let store = self.store
         do {
             let loaded = try await Task.detached(priority: .userInitiated) {
                 try store.loadMesh(for: doc)

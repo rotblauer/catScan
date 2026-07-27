@@ -32,7 +32,11 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
     var trackingWarning: String?
     var torchOn = false
     var finishedDocument: ScanDocument?
+    /// UI mirror of the overlay's mode (the source of truth lives on the
+    /// session queue inside `overlay`).
+    var overlayMode: MeshOverlayRenderer.Mode = .mesh
 
+    @ObservationIgnored let overlay = MeshOverlayRenderer()
     @ObservationIgnored let session = ARSession()
     @ObservationIgnored private let sessionQueue = DispatchQueue(label: "dev.catscan.arsession", qos: .userInitiated)
 
@@ -42,6 +46,7 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
     @ObservationIgnored private var isCapturing = false
     @ObservationIgnored private var captureStarted: Date?
     @ObservationIgnored private var lastColorPass: TimeInterval = 0
+    @ObservationIgnored private var lastOverlaySweep: TimeInterval = 0
     @ObservationIgnored private var lastStatsPush: TimeInterval = 0
 
     // Configured before the session starts.
@@ -84,11 +89,30 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
         colorizeEnabled = colorize
         classifyEnabled = classify
         simplifyCellSize = simplifyCell
+        if overlayMode == .coverage, !colorize {
+            overlayMode = .mesh
+        }
+        let mode = overlayMode
         sessionQueue.async {
             self.meshAnchors.removeAll()
             self.colorStore.removeAll()
+            self.overlay.clear()
+            self.overlay.setMode(mode, anchors: [], store: self.colorStore)
         }
         session.run(makeConfiguration(), options: [.resetTracking, .removeExistingAnchors, .resetSceneReconstruction])
+    }
+
+    /// Cycles Off → Mesh → Coverage (skipping Coverage when color capture is off).
+    func cycleOverlayMode() {
+        var next = overlayMode.next
+        if next == .coverage, !colorizeEnabled {
+            next = .off
+        }
+        overlayMode = next
+        Haptics.impact(.light)
+        sessionQueue.async {
+            self.overlay.setMode(next, anchors: Array(self.meshAnchors.values), store: self.colorStore)
+        }
     }
 
     // MARK: - Scan control
@@ -109,6 +133,7 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
         sessionQueue.async {
             self.meshAnchors.removeAll()
             self.colorStore.removeAll()
+            self.overlay.clear()
             if self.isCapturing { self.captureStarted = Date() }
         }
         session.run(makeConfiguration(), options: [.resetTracking, .removeExistingAnchors, .resetSceneReconstruction])
@@ -123,6 +148,7 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
             self.captureStarted = nil
             self.meshAnchors.removeAll()
             self.colorStore.removeAll()
+            self.overlay.clear()
         }
         session.run(makeConfiguration(), options: [.resetTracking, .removeExistingAnchors, .resetSceneReconstruction])
     }
@@ -130,6 +156,21 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
     func finishScan(store: ScanStore) {
         Haptics.impact(.heavy)
         phase = .processing(stage: "Capturing mesh", progress: 0.02)
+
+        // Grab the relocalization map before pausing — groundwork for scan
+        // diffing: any two scans with maps can later share a coordinate frame.
+        session.getCurrentWorldMap { [weak self] worldMap, _ in
+            guard let self else { return }
+            let mapData = worldMap.flatMap {
+                try? NSKeyedArchiver.archivedData(withRootObject: $0, requiringSecureCoding: true)
+            }
+            DispatchQueue.main.async {
+                self.captureAndProcess(store: store, worldMapData: mapData)
+            }
+        }
+    }
+
+    private func captureAndProcess(store: ScanStore, worldMapData: Data?) {
         session.pause()
         torchOn = false
 
@@ -153,6 +194,7 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
                                           colorStore: colors,
                                           simplifyCell: simplifyCell,
                                           duration: duration,
+                                          worldMapData: worldMapData,
                                           store: store)
             }
         }
@@ -173,6 +215,7 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
                                 colorStore: SpatialColorStore?,
                                 simplifyCell: Float?,
                                 duration: TimeInterval,
+                                worldMapData: Data?,
                                 store: ScanStore) async {
         var lastReported = -1.0
         let (mesh, colorFraction) = MeshBuilder.process(anchors: captured,
@@ -210,6 +253,7 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
                                                 name: name,
                                                 duration: duration,
                                                 colorFraction: colorFraction,
+                                                worldMap: worldMapData,
                                                 thumbnail: thumbnail)
             await MainActor.run {
                 self.finishedDocument = document
@@ -258,6 +302,7 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
     func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
         for anchor in anchors {
             meshAnchors.removeValue(forKey: anchor.identifier)
+            overlay.remove(id: anchor.identifier)
         }
     }
 
@@ -265,6 +310,7 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
         var changed = false
         for case let meshAnchor as ARMeshAnchor in anchors {
             meshAnchors[meshAnchor.identifier] = meshAnchor
+            overlay.update(anchor: meshAnchor, store: colorStore)
             changed = true
         }
         if changed { pushStatsIfNeeded() }
@@ -275,6 +321,10 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
         if colorizeEnabled, frame.timestamp - lastColorPass >= 0.25 {
             lastColorPass = frame.timestamp
             DepthColorSampler.integrate(frame: frame, into: colorStore)
+        }
+        if frame.timestamp - lastOverlaySweep >= 1.0 {
+            lastOverlaySweep = frame.timestamp
+            overlay.sweep(anchors: Array(meshAnchors.values), store: colorStore)
         }
         pushStatsIfNeeded()
     }

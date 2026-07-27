@@ -116,7 +116,7 @@ enum SceneKitSupport {
         return material
     }
 
-    private static func vertexSource(_ positions: [SIMD3<Float>]) -> SCNGeometrySource {
+    static func vertexSource(_ positions: [SIMD3<Float>]) -> SCNGeometrySource {
         let floats = MeshData.flatten(positions)
         let data = floats.withUnsafeBufferPointer { Data(buffer: $0) }
         return SCNGeometrySource(data: data,
@@ -142,7 +142,7 @@ enum SceneKitSupport {
                                  dataStride: 12)
     }
 
-    private static func colorSource(_ colors: [SIMD4<UInt8>]) -> SCNGeometrySource {
+    static func colorSource(_ colors: [SIMD4<UInt8>]) -> SCNGeometrySource {
         var floats = [Float]()
         floats.reserveCapacity(colors.count * 3)
         for c in colors {
@@ -247,6 +247,23 @@ enum SceneKitSupport {
     }
 
     // MARK: - Thumbnail
+
+    /// Offscreen render of an arbitrary node (used by debug verification).
+    static func renderPreview(node: SCNNode, center: SIMD3<Float>, extent: SIMD3<Float>, size: CGSize) -> UIImage? {
+        let scene = SCNScene()
+        node.position = SCNVector3(-center.x, -center.y, -center.z)
+        let pivot = SCNNode()
+        pivot.addChildNode(node)
+        scene.rootNode.addChildNode(pivot)
+        addLights(to: scene)
+        let camera = makeCamera(extent: extent)
+        scene.rootNode.addChildNode(camera)
+        scene.background.contents = AppGradients.thumbnailBackground
+        let renderer = SCNRenderer(device: MTLCreateSystemDefaultDevice(), options: nil)
+        renderer.scene = scene
+        renderer.pointOfView = camera
+        return renderer.snapshot(atTime: 0, with: size, antialiasingMode: .multisampling4X)
+    }
 
     static func renderThumbnail(mesh: MeshData, size: CGSize, mode: ViewerDisplayMode = .shaded) -> UIImage? {
         let (scene, _, camera) = makeScene(mesh: mesh, mode: mode)

@@ -1,6 +1,8 @@
 #if DEBUG
 import Foundation
+import SceneKit
 import UIKit
+import simd
 
 /// Headless test hooks, compiled out of Release builds.
 ///
@@ -109,6 +111,30 @@ enum DebugAutomation {
             } else {
                 lines.append("mode \(mode.rawValue): FAIL")
             }
+        }
+
+        // Coverage heatmap geometry — synthetic store paints half the sample
+        // with a bottom-to-top quality ramp; the other half should be red.
+        let coverageStore = SpatialColorStore()
+        let (clo, chi) = mesh.bounds()
+        let midX = (clo.x + chi.x) / 2
+        for p in mesh.positions where p.x > midX {
+            let t = (p.y - clo.y) / max(0.001, chi.y - clo.y)
+            coverageStore.integrate(point: p, r: 200, g: 200, b: 200, quality: 0.1 + 1.3 * t)
+        }
+        let coverageGeometry = MeshOverlayRenderer.coverageGeometry(localPositions: mesh.positions,
+                                                                    indices: mesh.indices,
+                                                                    transform: matrix_identity_float4x4,
+                                                                    store: coverageStore)
+        if let image = SceneKitSupport.renderPreview(node: SCNNode(geometry: coverageGeometry),
+                                                     center: (clo + chi) * 0.5,
+                                                     extent: chi - clo,
+                                                     size: CGSize(width: 500, height: 500)),
+           let png = image.pngData() {
+            try? png.write(to: modesDir.appendingPathComponent("coverage-overlay.png"))
+            lines.append("coverage-render: ok cells=\(coverageStore.count)")
+        } else {
+            lines.append("coverage-render: FAIL")
         }
 
         return lines

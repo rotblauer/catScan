@@ -66,6 +66,31 @@ final class SpatialColorStore {
         }
     }
 
+    /// Best sample quality at `point`'s cell or its six face neighbors.
+    /// Returns 0 when nothing was ever seen nearby. Cheap enough to call
+    /// per-vertex from the live coverage overlay.
+    func maxQuality(near point: SIMD3<Float>) -> Float {
+        guard let coord = cellCoordinate(point) else { return 0 }
+        var best: Float = 0
+        for offset in Self.axisNeighborhood {
+            let c = coord &+ offset
+            guard c.x >= 0, c.x < Self.axisLimit,
+                  c.y >= 0, c.y < Self.axisLimit,
+                  c.z >= 0, c.z < Self.axisLimit else { continue }
+            if let sample = cells[Self.key(c)], sample.quality > best {
+                best = sample.quality
+            }
+        }
+        return best
+    }
+
+    private static let axisNeighborhood: [SIMD3<Int32>] = [
+        SIMD3(0, 0, 0),
+        SIMD3(1, 0, 0), SIMD3(-1, 0, 0),
+        SIMD3(0, 1, 0), SIMD3(0, -1, 0),
+        SIMD3(0, 0, 1), SIMD3(0, 0, -1),
+    ]
+
     /// Quality-weighted blend of samples in the 3×3×3 neighborhood around `point`.
     /// Returns RGB in 0...255, or nil when nothing was ever seen nearby.
     func lookup(point: SIMD3<Float>) -> SIMD3<Float>? {

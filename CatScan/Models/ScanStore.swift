@@ -8,6 +8,9 @@ final class ScanStore {
     private(set) var scans: [ScanDocument] = []
 
     @ObservationIgnored let rootURL: URL
+    /// Captured at init (main thread) — UIDevice is main-actor-isolated, and
+    /// save() runs from background tasks.
+    @ObservationIgnored private let deviceModel = UIDevice.current.model
 
     init() {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -28,6 +31,16 @@ final class ScanStore {
 
     func thumbnailURL(for document: ScanDocument) -> URL {
         folderURL(for: document.id).appendingPathComponent("thumb.png")
+    }
+
+    /// The ARWorldMap saved with the scan, when tracking allowed capturing one.
+    /// Future scan-diffing will relocalize against this for a shared frame.
+    func worldMapURL(for document: ScanDocument) -> URL {
+        folderURL(for: document.id).appendingPathComponent("worldmap.armap")
+    }
+
+    func hasWorldMap(for document: ScanDocument) -> Bool {
+        FileManager.default.fileExists(atPath: worldMapURL(for: document).path)
     }
 
     private func metaURL(for id: UUID) -> URL {
@@ -63,6 +76,7 @@ final class ScanStore {
               name: String,
               duration: TimeInterval,
               colorFraction: Float,
+              worldMap: Data? = nil,
               thumbnail: UIImage?) async throws -> ScanDocument {
         let id = UUID()
         let folder = folderURL(for: id)
@@ -72,6 +86,9 @@ final class ScanStore {
         try meshData.write(to: folder.appendingPathComponent("mesh.catmesh"), options: .atomic)
         if let png = thumbnail?.pngData() {
             try? png.write(to: folder.appendingPathComponent("thumb.png"), options: .atomic)
+        }
+        if let worldMap {
+            try? worldMap.write(to: folder.appendingPathComponent("worldmap.armap"), options: .atomic)
         }
 
         let (lo, hi) = mesh.bounds()
@@ -87,7 +104,7 @@ final class ScanStore {
             boundsMax: [hi.x, hi.y, hi.z],
             hasClassification: mesh.faceClasses != nil,
             colorFraction: colorFraction,
-            deviceModel: UIDevice.current.model,
+            deviceModel: deviceModel,
             fileSizeBytes: meshData.count
         )
         try writeMeta(document)

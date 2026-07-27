@@ -1,7 +1,7 @@
 import Foundation
 
 enum ExportFormat: String, CaseIterable, Identifiable {
-    case usdz, glb, obj, ply, stl
+    case usdz, glb, html, obj, ply, stl
 
     var id: String { rawValue }
     var fileExtension: String { rawValue }
@@ -10,6 +10,7 @@ enum ExportFormat: String, CaseIterable, Identifiable {
         switch self {
         case .usdz: return "USDZ"
         case .glb: return "glTF Binary"
+        case .html: return "Web Viewer"
         case .obj: return "OBJ"
         case .ply: return "PLY"
         case .stl: return "STL"
@@ -20,6 +21,7 @@ enum ExportFormat: String, CaseIterable, Identifiable {
         switch self {
         case .usdz: return "Apple's AR format with per-vertex colors. Opens in AR Quick Look, Messages, and Reality Composer."
         case .glb: return "The web-standard 3D format. Opens in Blender, three.js, and Windows 3D Viewer with vertex colors."
+        case .html: return "A single self-contained web page with a built-in 3D viewer. Opens in any browser — no app, no internet."
         case .obj: return "Universally supported text format. Vertex colors use the MeshLab convention."
         case .ply: return "Compact binary format loved by MeshLab and CloudCompare. Best for colored scan data."
         case .stl: return "For 3D printing and CAD. Geometry only — no colors."
@@ -34,6 +36,7 @@ enum ExportFormat: String, CaseIterable, Identifiable {
         switch self {
         case .usdz: return "arkit"
         case .glb: return "globe"
+        case .html: return "safari"
         case .obj: return "doc.plaintext"
         case .ply: return "point.3.filled.connected.trianglepath.dotted"
         case .stl: return "printer.fill"
@@ -69,6 +72,7 @@ enum MeshExporter {
             case .ply: try PLYExporter.write(mesh: mesh, includeColors: includeColors, to: url)
             case .stl: try STLExporter.write(mesh: mesh, to: url)
             case .glb: try GLBExporter.write(mesh: mesh, includeColors: includeColors, name: name, to: url)
+            case .html: try HTMLExporter.write(mesh: mesh, includeColors: includeColors, name: name, to: url)
             case .usdz: try USDZExporter.export(mesh: mesh, includeColors: includeColors, to: url)
             }
         }.value
@@ -83,6 +87,7 @@ enum MeshExporter {
         case .ply: return v * (includeColors ? 27 : 24) + f * 13 + 400
         case .stl: return 84 + f * 50
         case .glb: return v * (includeColors ? 36 : 24) + f * 12 + 1600
+        case .html: return (v * (includeColors ? 36 : 24) + f * 12) * 4 / 3 + 14_000
         case .usdz: return v * 30 + f * 12 + 4000
         }
     }

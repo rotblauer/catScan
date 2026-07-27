@@ -6,6 +6,10 @@ import simd
 enum GLBExporter {
 
     static func write(mesh: MeshData, includeColors: Bool, name: String, to url: URL) throws {
+        try data(mesh: mesh, includeColors: includeColors, name: name).write(to: url, options: .atomic)
+    }
+
+    static func data(mesh: MeshData, includeColors: Bool, name: String) throws -> Data {
         let n = mesh.vertexCount
         let useColors = includeColors && mesh.colors.count == n
         let hasNormals = mesh.normals.count == n
@@ -137,6 +141,6 @@ enum GLBExporter {
         payload.append(binHeader.data)
         payload.append(bin)
 
-        try payload.write(to: url, options: .atomic)
+        return payload
     }
 }

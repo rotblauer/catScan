@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ScanInfoSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(ScanStore.self) private var store
     let document: ScanDocument
 
     var body: some View {
@@ -26,6 +27,7 @@ struct ScanInfoSheet: View {
                         ? "\(Int((document.colorFraction * 100).rounded()))% of vertices"
                         : "No")
                     LabeledContent("Surface classes", value: document.hasClassification ? "Yes" : "No")
+                    LabeledContent("Relocalization map", value: store.hasWorldMap(for: document) ? "Saved" : "None")
                 }
             }
             .navigationTitle("Scan Info")

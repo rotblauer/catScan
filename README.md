@@ -17,13 +17,16 @@ Scan the world, view it in 3D, export to standard formats, and share to Photos a
 
 - **LiDAR mesh scanning** — ARKit scene reconstruction with a live mesh overlay, tracking-quality hints, coaching overlay, torch toggle, and live triangle/color statistics while you scan.
 - **True color capture** — while scanning, every LiDAR depth frame is unprojected into world space and paired with the camera image, accumulating a quality-weighted sparse voxel color field. After the scan, each mesh vertex is painted from that field, so scans come out in color without any cloud processing.
+- **Live coverage heatmap** — a scanner overlay mode that paints the mesh by color-capture quality: green where the camera has good samples, red where it has never looked. Cycle Off → Mesh → Coverage with the eye button and "paint the room green" for gap-free color.
 - **Surface classification** — optionally labels faces as wall / floor / ceiling / table / seat / window / door, with a dedicated color-coded view mode.
 - **Post-processing pipeline** — mesh chunk merging, vertex welding across ARKit anchor borders, color hole-filling, floater (disconnected island) removal, smooth normal recomputation, and optional vertex-clustering decimation (Maximum / Balanced / Compact detail settings).
 - **Scan library** — thumbnails rendered offscreen, rename/delete, scan info (dimensions, surface area, triangle counts, color coverage, file size).
 - **In-app 3D viewer** — SceneKit orbit/zoom viewer with Shaded, Unlit, Wireframe, Points, and Classes display modes, in light and dark themes.
 - **Standard-format export** — OBJ, PLY, STL, glTF binary (GLB), and USDZ, shared via the system share sheet (AirDrop, Files, Messages, …). GLB and USDZ writers are implemented from scratch.
+- **Single-file web viewer export** — export any scan as one self-contained `.html` with a built-in WebGL orbit viewer (embedded GLB + ~300 lines of hand-rolled JS). AirDrop it to anyone; it opens in any browser with no app, account, or internet.
 - **Photos integration** — save viewer snapshots and rendered 360° turntable videos straight to your photo library (Photos can't store 3D models, so CatScan renders them for you).
 - **AR Quick Look** — view any scan in AR, placed in your room, via the built-in USDZ pipeline.
+- **Diff-ready captures** — each scan stores its `ARWorldMap` alongside the mesh, so future versions can relocalize a rescan into the same coordinate frame and highlight what changed.
 - **Works without LiDAR too** — devices without LiDAR (and the simulator) can't scan, but get a procedural sample scan to exercise the viewer, exports, and Photos features.
 
 ## Requirements
@@ -56,10 +59,11 @@ CatScan/
 │                   DepthColorSampler (depth-map → colored world points)
 │                   SpatialColorStore (sparse voxel color field)
 │                   MeshBuilder (merge → weld → color → clean → normals → simplify)
-│                   ScannerView + ARViewContainer (RealityKit mesh overlay UI)
+│                   MeshOverlayRenderer (live wireframe / coverage heatmap)
+│                   ScannerView + ScannerSceneView (ARSCNView scanner UI)
 ├── Viewer/         SceneKit viewer + display modes, turntable video renderer,
 │                   AR Quick Look presentation, scan info
-├── Export/         OBJ / PLY / STL / GLB / USDZ writers, export UI, share sheet
+├── Export/         OBJ / PLY / STL / GLB / USDZ / HTML writers, export UI, share sheet
 └── Support/        Photos saving, toasts, haptics, formatting helpers
 ```
 
@@ -75,6 +79,7 @@ Capture design notes:
 |--------|--------|----------|
 | USDZ   | ✓ (displayColor) | AR Quick Look, Messages, Apple ecosystem |
 | GLB    | ✓ (COLOR_0)      | Blender, three.js, game engines, web |
+| HTML   | ✓ (embedded GLB) | Sharing an interactive viewer with anyone |
 | PLY    | ✓ (binary)       | MeshLab, CloudCompare, scan processing |
 | OBJ    | ✓ (MeshLab convention) | Maximum compatibility, text-based |
 | STL    | —                | 3D printing, CAD |

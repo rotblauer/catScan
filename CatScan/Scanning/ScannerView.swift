@@ -51,10 +51,10 @@ struct ScannerView: View {
     var body: some View {
         ZStack {
             if DeviceSupport.supportsLiDARScanning {
-                ARViewContainer(controller: controller,
-                                colorize: colorize,
-                                classify: classify,
-                                simplifyCell: detail.cellSize)
+                ScannerSceneView(controller: controller,
+                                 colorize: colorize,
+                                 classify: classify,
+                                 simplifyCell: detail.cellSize)
                     .ignoresSafeArea()
             } else {
                 Color.black.ignoresSafeArea()
@@ -125,6 +125,9 @@ struct ScannerView: View {
                     }
                 }
                 Spacer()
+                CircleIconButton(systemImage: controller.overlayMode.systemImage) {
+                    controller.cycleOverlayMode()
+                }
                 if controller.torchAvailable {
                     CircleIconButton(systemImage: controller.torchOn ? "flashlight.on.fill" : "flashlight.off.fill") {
                         controller.toggleTorch()
@@ -138,6 +141,16 @@ struct ScannerView: View {
 
             if isScanning {
                 statsChip
+                    .padding(.top, 6)
+            }
+
+            if controller.overlayMode == .coverage {
+                Text(isScanning ? "Green is captured — aim at red areas" : "Coverage paints in once you start scanning")
+                    .font(.caption.weight(.medium))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.5), in: Capsule())
+                    .foregroundStyle(.white.opacity(0.9))
                     .padding(.top, 6)
             }
 
