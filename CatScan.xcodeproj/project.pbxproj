@@ -8,6 +8,7 @@
 
 /* Begin PBXFileReference section */
 		CA75CAFE00000000000000A1 /* CatScan.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CatScan.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		CA75CAFE00000000000000A2 /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Base.xcconfig; path = Config/Base.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -33,6 +34,7 @@
 			isa = PBXGroup;
 			children = (
 				CA75CAFE00000000000000B1 /* CatScan */,
+				CA75CAFE00000000000000A2 /* Base.xcconfig */,
 				CA75CAFE00000000000000D2 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -247,12 +249,12 @@
 		};
 		CA75CAFE00000000000000F4 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = CA75CAFE00000000000000A2 /* Base.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 3T8C45E2VR;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = CatScan;
@@ -279,12 +281,12 @@
 		};
 		CA75CAFE00000000000000F5 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = CA75CAFE00000000000000A2 /* Base.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 3T8C45E2VR;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = CatScan;

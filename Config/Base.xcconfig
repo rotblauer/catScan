@@ -1,0 +1,7 @@
+// Shared build configuration for CatScan.
+//
+// Machine-local settings — your signing team, or a custom bundle id — belong
+// in Config/Local.xcconfig, which is ignored by git. Copy
+// Local.xcconfig.template to Local.xcconfig and fill it in; the optional
+// include below means a missing file is fine (simulator builds need no team).
+#include? "Local.xcconfig"

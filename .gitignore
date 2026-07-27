@@ -66,3 +66,6 @@ fastlane/test_output
 
 # Xcode build output in-repo (e.g. xcodebuild -derivedDataPath)
 DerivedData/
+
+# Machine-local signing configuration
+Config/Local.xcconfig

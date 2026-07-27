@@ -1,0 +1,8 @@
+// Copy this file to Config/Local.xcconfig (gitignored) and fill in your
+// Apple Development team id — find it in Xcode → Settings → Accounts, or at
+// developer.apple.com/account under Membership Details.
+DEVELOPMENT_TEAM = YOUR_TEAM_ID
+
+// Optional: claim your own bundle id if the default collides with another
+// developer's free-provisioning registration.
+// PRODUCT_BUNDLE_IDENTIFIER = com.yourname.CatScan
