@@ -4,7 +4,7 @@ import UIKit
 import simd
 
 enum ViewerDisplayMode: String, CaseIterable, Identifiable {
-    case shaded, unlit, wireframe, points, classification
+    case shaded, unlit, wireframe, points, classification, changes
 
     var id: String { rawValue }
 
@@ -15,13 +15,17 @@ enum ViewerDisplayMode: String, CaseIterable, Identifiable {
         case .wireframe: return "Wire"
         case .points: return "Points"
         case .classification: return "Classes"
+        case .changes: return "Changes"
         }
     }
 
-    static func available(for mesh: MeshData) -> [ViewerDisplayMode] {
+    static func available(for mesh: MeshData, hasDiff: Bool = false) -> [ViewerDisplayMode] {
         var modes: [ViewerDisplayMode] = [.shaded, .unlit, .wireframe, .points]
         if let classes = mesh.faceClasses, !classes.isEmpty {
             modes.append(.classification)
+        }
+        if hasDiff {
+            modes.append(.changes)
         }
         return modes
     }
@@ -105,7 +109,7 @@ enum SceneKitSupport {
         material.diffuse.contents = UIColor.white
         material.isDoubleSided = true
         switch mode {
-        case .shaded, .classification:
+        case .shaded, .classification, .changes:
             material.lightingModel = .lambert
         case .unlit, .points:
             material.lightingModel = .constant
@@ -175,6 +179,49 @@ enum SceneKitSupport {
             face += 1
         }
         return colors
+    }
+
+    // MARK: - Scan-diff rendering
+
+    static let diffAddedColor = SIMD4<UInt8>(48, 209, 88, 255)
+    static let diffUnchangedColor = SIMD4<UInt8>(186, 186, 194, 255)
+
+    /// The rescan mesh colored by change status: green where geometry appeared,
+    /// muted gray elsewhere.
+    static func changesGeometry(mesh: MeshData, addedMask: [Bool]) -> SCNGeometry {
+        var colors = [SIMD4<UInt8>](repeating: diffUnchangedColor, count: mesh.vertexCount)
+        if addedMask.count == mesh.vertexCount {
+            for i in 0..<mesh.vertexCount where addedMask[i] {
+                colors[i] = diffAddedColor
+            }
+        }
+        var sources: [SCNGeometrySource] = [vertexSource(mesh.positions)]
+        if mesh.normals.count == mesh.vertexCount {
+            sources.append(normalSource(mesh.normals))
+        }
+        sources.append(colorSource(colors))
+        let element = SCNGeometryElement(indices: mesh.indices, primitiveType: .triangles)
+        let geometry = SCNGeometry(sources: sources, elements: [element])
+        let material = SCNMaterial()
+        material.lightingModel = .lambert
+        material.diffuse.contents = UIColor.white
+        material.isDoubleSided = true
+        geometry.materials = [material]
+        return geometry
+    }
+
+    /// The removed geometry from the reference scan, rendered as a red ghost.
+    static func removedGhostNode(removed: MeshData) -> SCNNode? {
+        guard removed.vertexCount > 0, !removed.indices.isEmpty else { return nil }
+        let element = SCNGeometryElement(indices: removed.indices, primitiveType: .triangles)
+        let geometry = SCNGeometry(sources: [vertexSource(removed.positions)], elements: [element])
+        let material = SCNMaterial()
+        material.lightingModel = .constant
+        material.diffuse.contents = UIColor(red: 1.0, green: 0.27, blue: 0.23, alpha: 1)
+        material.transparency = 0.55
+        material.isDoubleSided = true
+        geometry.materials = [material]
+        return SCNNode(geometry: geometry)
     }
 
     /// Which classes actually occur in this mesh, for the legend.

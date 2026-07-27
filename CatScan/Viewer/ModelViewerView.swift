@@ -5,10 +5,12 @@ struct ModelViewerView: View {
     @Environment(ScanStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.rescanAction) private var rescanAction
 
     let document: ScanDocument
 
     @State private var mesh: MeshData?
+    @State private var diff: (added: [Bool], removed: MeshData)?
     @State private var loadError: String?
     @State private var mode: ViewerDisplayMode = .shaded
     @State private var proxy = SCNViewProxy()
@@ -35,7 +37,7 @@ struct ModelViewerView: View {
     var body: some View {
         ZStack {
             if let mesh {
-                SceneKitViewer(mesh: mesh, mode: mode, colorScheme: colorScheme, proxy: proxy)
+                SceneKitViewer(mesh: mesh, mode: mode, colorScheme: colorScheme, proxy: proxy, diff: diff)
                     .ignoresSafeArea(edges: .bottom)
             } else if let loadError {
                 ContentUnavailableView("Couldn't Load Scan",
@@ -60,6 +62,13 @@ struct ModelViewerView: View {
                         showRename = true
                     } label: {
                         Label("Rename", systemImage: "pencil")
+                    }
+                    if store.hasWorldMap(for: currentDocument) {
+                        Button {
+                            rescanAction(currentDocument)
+                        } label: {
+                            Label("Rescan & Compare", systemImage: "arrow.triangle.2.circlepath")
+                        }
                     }
                     Divider()
                     Button(role: .destructive) {
@@ -119,9 +128,12 @@ struct ModelViewerView: View {
             if mode == .classification, let mesh {
                 ClassificationLegend(classes: SceneKitSupport.presentClasses(in: mesh))
             }
+            if mode == .changes {
+                ChangesLegend(document: currentDocument)
+            }
             if let mesh {
                 Picker("Display mode", selection: $mode) {
-                    ForEach(ViewerDisplayMode.available(for: mesh)) { m in
+                    ForEach(ViewerDisplayMode.available(for: mesh, hasDiff: diff != nil)) { m in
                         Text(m.label).tag(m)
                     }
                 }
@@ -171,6 +183,14 @@ struct ModelViewerView: View {
                 try store.loadMesh(for: doc)
             }.value
             mesh = loaded
+            if doc.hasDiff, store.hasDiffFiles(for: doc) {
+                diff = try? await Task.detached(priority: .userInitiated) {
+                    try store.loadDiff(for: doc)
+                }.value
+                if diff != nil, mode == .shaded {
+                    mode = .changes   // a rescan's whole point is the comparison
+                }
+            }
         } catch {
             loadError = error.localizedDescription
         }
@@ -235,6 +255,30 @@ struct ModelViewerView: View {
 }
 
 // MARK: - Pieces
+
+struct ChangesLegend: View {
+    let document: ScanDocument
+
+    var body: some View {
+        HStack(spacing: 10) {
+            legendChip(color: Color(red: 0.19, green: 0.82, blue: 0.35),
+                       label: document.diffAddedArea.map { String(format: "Added %.2f m²", $0) } ?? "Added")
+            legendChip(color: Color(red: 1.0, green: 0.27, blue: 0.23),
+                       label: document.diffRemovedArea.map { String(format: "Removed %.2f m²", $0) } ?? "Removed")
+            legendChip(color: Color(white: 0.72), label: "Unchanged")
+        }
+    }
+
+    private func legendChip(color: Color, label: String) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 9, height: 9)
+            Text(label).font(.caption2)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
+        .background(.thinMaterial, in: Capsule())
+    }
+}
 
 struct ClassificationLegend: View {
     let classes: [SurfaceClass]

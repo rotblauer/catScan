@@ -30,6 +30,20 @@ struct ScanInfoSheet: View {
                     LabeledContent("Surface classes", value: document.hasClassification ? "Yes" : "No")
                     LabeledContent("Relocalization map", value: store.hasWorldMap(for: document) ? "Saved" : "None")
                 }
+                if document.hasDiff {
+                    Section("Comparison") {
+                        if let referenceId = document.referenceScanId,
+                           let reference = store.scans.first(where: { $0.id == referenceId }) {
+                            LabeledContent("Compared against", value: reference.name)
+                        }
+                        if let added = document.diffAddedArea {
+                            LabeledContent("Added surface", value: String(format: "%.2f m²", added))
+                        }
+                        if let removed = document.diffRemovedArea {
+                            LabeledContent("Removed surface", value: String(format: "%.2f m²", removed))
+                        }
+                    }
+                }
             }
             .navigationTitle("Scan Info")
             .navigationBarTitleDisplayMode(.inline)

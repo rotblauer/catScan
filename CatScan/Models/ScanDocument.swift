@@ -16,12 +16,20 @@ struct ScanDocument: Identifiable, Codable, Hashable {
     var colorFraction: Float
     var deviceModel: String
     var fileSizeBytes: Int
-    /// "room" or "detail"; optional so pre-existing scans keep decoding.
+    /// "room", "detail", or "moment"; optional so pre-existing scans keep decoding.
     var captureMode: String?
+    /// Set on rescans: the scan this one was compared against.
+    var referenceScanId: UUID?
+    var diffAddedArea: Float?
+    var diffRemovedArea: Float?
 
     var isColored: Bool { colorFraction > 0.01 }
 
     var isDetailCapture: Bool { captureMode == "detail" }
+
+    var isMoment: Bool { captureMode == "moment" }
+
+    var hasDiff: Bool { referenceScanId != nil }
 
     var extent: SIMD3<Float> {
         guard boundsMin.count == 3, boundsMax.count == 3 else { return .zero }

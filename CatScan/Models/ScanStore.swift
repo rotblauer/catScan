@@ -43,6 +43,25 @@ final class ScanStore {
         FileManager.default.fileExists(atPath: worldMapURL(for: document).path)
     }
 
+    // MARK: - Diff artifacts
+
+    func hasDiffFiles(for document: ScanDocument) -> Bool {
+        let folder = folderURL(for: document.id)
+        return FileManager.default.fileExists(atPath: folder.appendingPathComponent("diff-added.bytes").path)
+    }
+
+    /// The per-vertex added mask and the removed-geometry ghost for a rescan.
+    func loadDiff(for document: ScanDocument) throws -> (added: [Bool], removed: MeshData) {
+        let folder = folderURL(for: document.id)
+        let maskBytes = try Data(contentsOf: folder.appendingPathComponent("diff-added.bytes"))
+        let added = maskBytes.map { $0 != 0 }
+        let removedURL = folder.appendingPathComponent("diff-removed.catmesh")
+        let removed = FileManager.default.fileExists(atPath: removedURL.path)
+            ? try MeshData.load(from: removedURL)
+            : MeshData()
+        return (added, removed)
+    }
+
     private func metaURL(for id: UUID) -> URL {
         folderURL(for: id).appendingPathComponent("meta.json")
     }
@@ -78,6 +97,10 @@ final class ScanStore {
               colorFraction: Float,
               captureMode: String = "room",
               worldMap: Data? = nil,
+              referenceScanId: UUID? = nil,
+              diffAddedArea: Float? = nil,
+              diffRemovedArea: Float? = nil,
+              ancillaryFiles: [String: Data] = [:],
               thumbnail: UIImage?) async throws -> ScanDocument {
         let id = UUID()
         let folder = folderURL(for: id)
@@ -90,6 +113,9 @@ final class ScanStore {
         }
         if let worldMap {
             try? worldMap.write(to: folder.appendingPathComponent("worldmap.armap"), options: .atomic)
+        }
+        for (filename, data) in ancillaryFiles {
+            try? data.write(to: folder.appendingPathComponent(filename), options: .atomic)
         }
 
         let (lo, hi) = mesh.bounds()
@@ -107,7 +133,10 @@ final class ScanStore {
             colorFraction: colorFraction,
             deviceModel: deviceModel,
             fileSizeBytes: meshData.count,
-            captureMode: captureMode
+            captureMode: captureMode,
+            referenceScanId: referenceScanId,
+            diffAddedArea: diffAddedArea,
+            diffRemovedArea: diffRemovedArea
         )
         try writeMeta(document)
 

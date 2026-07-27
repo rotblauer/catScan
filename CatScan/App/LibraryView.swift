@@ -1,10 +1,24 @@
 import SwiftUI
 
+/// Lets any descendant (the viewer, context menus) launch a Rescan & Compare
+/// session; LibraryView owns the actual scanner presentation.
+private struct RescanActionKey: EnvironmentKey {
+    static let defaultValue: (ScanDocument) -> Void = { _ in }
+}
+
+extension EnvironmentValues {
+    var rescanAction: (ScanDocument) -> Void {
+        get { self[RescanActionKey.self] }
+        set { self[RescanActionKey.self] = newValue }
+    }
+}
+
 struct LibraryView: View {
     @Environment(ScanStore.self) private var store
 
     @State private var path: [ScanDocument] = []
     @State private var showScanner = false
+    @State private var rescanTarget: ScanDocument?
     @State private var showUnsupported = false
     @State private var renameTarget: ScanDocument?
     @State private var renameText = ""
@@ -45,6 +59,18 @@ struct LibraryView: View {
         .fullScreenCover(isPresented: $showScanner) {
             ScannerView { document in
                 path.append(document)
+            }
+        }
+        .fullScreenCover(item: $rescanTarget) { reference in
+            ScannerView(referenceScan: reference) { document in
+                path.append(document)
+            }
+        }
+        .environment(\.rescanAction) { document in
+            if DeviceSupport.supportsLiDARScanning {
+                rescanTarget = document
+            } else {
+                showUnsupported = true
             }
         }
         .sheet(isPresented: $showUnsupported) {

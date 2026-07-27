@@ -139,8 +139,132 @@ enum DebugAutomation {
 
         lines.append(contentsOf: tsdfSphereTest(renderInto: modesDir))
         lines.append(contentsOf: tsdfPlaneTest())
+        lines.append(contentsOf: await scanDiffTest(store: store, renderInto: modesDir))
 
         return lines
+    }
+
+    /// Diff check: chop a region off the sample and weld a sphere onto it,
+    /// then verify the diff reports both changes with the right areas and the
+    /// artifacts round-trip through the store.
+    private static func scanDiffTest(store: ScanStore, renderInto directory: URL) async -> [String] {
+        let reference = SampleMeshFactory.yarnBall()
+        var modified = reference
+
+        // Remove everything right of a chop plane.
+        let (lo, hi) = reference.bounds()
+        let chopX = lo.x + (hi.x - lo.x) * 0.55
+        var keptIndices: [UInt32] = []
+        var choppedArea: Float = 0
+        // The diff's match tolerance (~2 cells) intentionally forgives a
+        // boundary band near surviving geometry, so only area beyond the band
+        // is guaranteed to be flagged.
+        var definitelyChoppedArea: Float = 0
+        let bandWidth = ScanDiff.defaultTolerance * 2.2
+        var i = 0
+        while i + 2 < reference.indices.count {
+            let a = reference.positions[Int(reference.indices[i])]
+            let b = reference.positions[Int(reference.indices[i + 1])]
+            let c = reference.positions[Int(reference.indices[i + 2])]
+            let centroidX = (a.x + b.x + c.x) / 3
+            if centroidX > chopX {
+                let area = simd_length(simd_cross(b - a, c - a)) * 0.5
+                choppedArea += area
+                if centroidX > chopX + bandWidth {
+                    definitelyChoppedArea += area
+                }
+            } else {
+                keptIndices.append(contentsOf: [reference.indices[i], reference.indices[i + 1], reference.indices[i + 2]])
+            }
+            i += 3
+        }
+        modified.indices = keptIndices
+        modified.faceClasses = nil
+        MeshBuilder.compactVertices(&modified)
+
+        // Add a floating blob well clear of the original surface.
+        let blob = uvSphere(center: SIMD3(0, hi.y + 0.12, 0), radius: 0.06)
+        let blobArea = blob.surfaceArea()
+        let base = UInt32(modified.vertexCount)
+        modified.positions.append(contentsOf: blob.positions)
+        modified.normals.append(contentsOf: blob.normals)
+        modified.colors.append(contentsOf: [SIMD4<UInt8>](repeating: SIMD4(200, 200, 205, 255), count: blob.vertexCount))
+        modified.indices.append(contentsOf: blob.indices.map { $0 + base })
+
+        let diff = ScanDiff.compute(new: modified, reference: reference)
+        let addedRatio = diff.addedArea / max(0.0001, blobArea)
+        let removedOK = diff.removedArea >= definitelyChoppedArea * 0.85
+            && diff.removedArea <= choppedArea * 1.05
+        let addedCount = diff.addedMask.filter { $0 }.count
+
+        let parent = SCNNode()
+        parent.addChildNode(SCNNode(geometry: SceneKitSupport.changesGeometry(mesh: modified, addedMask: diff.addedMask)))
+        if let ghost = SceneKitSupport.removedGhostNode(removed: diff.removedSubmesh) {
+            parent.addChildNode(ghost)
+        }
+        let (mlo, mhi) = reference.bounds()
+        if let image = SceneKitSupport.renderPreview(node: parent,
+                                                     center: (mlo + mhi) * 0.5 + SIMD3(0, 0.06, 0),
+                                                     extent: (mhi - mlo) + SIMD3(0, 0.24, 0),
+                                                     size: CGSize(width: 500, height: 500)),
+           let png = image.pngData() {
+            try? png.write(to: directory.appendingPathComponent("changes-diff.png"))
+        }
+
+        var lines = [String(format: "scan-diff: %@ addedRatio=%.3f removed=%.3f (band-adjusted floor %.3f, total %.3f) addedVerts=%d removedFaces=%d",
+                            (abs(addedRatio - 1) < 0.15 && removedOK && addedCount > 0) ? "ok" : "FAIL",
+                            addedRatio, diff.removedArea, definitelyChoppedArea, choppedArea,
+                            addedCount, diff.removedSubmesh.faceCount)]
+
+        // Round-trip the artifacts through the store like a real rescan.
+        do {
+            let refDoc = try await store.save(mesh: reference, name: "DiffRef", duration: 0,
+                                              colorFraction: 1, thumbnail: nil)
+            let ancillary: [String: Data] = [
+                "diff-added.bytes": Data(diff.addedMask.map { $0 ? 1 : 0 }),
+                "diff-removed.catmesh": diff.removedSubmesh.serialized(),
+            ]
+            let rescanDoc = try await store.save(mesh: modified, name: "DiffRef · Rescan", duration: 0,
+                                                 colorFraction: 1,
+                                                 referenceScanId: refDoc.id,
+                                                 diffAddedArea: diff.addedArea,
+                                                 diffRemovedArea: diff.removedArea,
+                                                 ancillaryFiles: ancillary,
+                                                 thumbnail: nil)
+            let loaded = try store.loadDiff(for: rescanDoc)
+            let ok = loaded.added.count == modified.vertexCount
+                && loaded.removed.faceCount == diff.removedSubmesh.faceCount
+                && rescanDoc.hasDiff
+            lines.append("scan-diff-roundtrip: \(ok ? "ok" : "FAIL") mask=\(loaded.added.count) ghostFaces=\(loaded.removed.faceCount)")
+        } catch {
+            lines.append("scan-diff-roundtrip: FAIL \(error)")
+        }
+        return lines
+    }
+
+    private static func uvSphere(center: SIMD3<Float>, radius: Float, rings: Int = 14, segments: Int = 20) -> MeshData {
+        var mesh = MeshData()
+        for ring in 0...rings {
+            let phi = Float.pi * Float(ring) / Float(rings)
+            for segment in 0..<segments {
+                let theta = 2 * Float.pi * Float(segment) / Float(segments)
+                let normal = SIMD3(sin(phi) * cos(theta), cos(phi), sin(phi) * sin(theta))
+                mesh.positions.append(center + normal * radius)
+                mesh.normals.append(normal)
+            }
+        }
+        for ring in 0..<rings {
+            for segment in 0..<segments {
+                let next = (segment + 1) % segments
+                let a = UInt32(ring * segments + segment)
+                let b = UInt32((ring + 1) * segments + segment)
+                let c = UInt32((ring + 1) * segments + next)
+                let d = UInt32(ring * segments + next)
+                if ring > 0 { mesh.indices.append(contentsOf: [a, b, d]) }
+                if ring < rings - 1 { mesh.indices.append(contentsOf: [b, c, d]) }
+            }
+        }
+        return mesh
     }
 
     /// Detail-mode extraction check: an analytic sphere SDF must come out as a

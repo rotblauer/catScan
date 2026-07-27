@@ -93,6 +93,9 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
     /// UI mirror of the overlay's mode (the source of truth lives on the
     /// session queue inside `overlay`).
     var overlayMode: MeshOverlayRenderer.Mode = .mesh
+    /// True once ARKit has locked onto a reference scan's world map (always
+    /// true when there is no reference).
+    var isRelocalized = true
 
     @ObservationIgnored let overlay = MeshOverlayRenderer()
     @ObservationIgnored let session = ARSession()
@@ -115,6 +118,28 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
     @ObservationIgnored var simplifyCellSize: Float?
     @ObservationIgnored var scanMode: ScanMode = .room
     @ObservationIgnored var detailVolume: DetailVolume = .medium
+
+    // Rescan-and-compare state.
+    @ObservationIgnored private var referenceMap: ARWorldMap?
+    @ObservationIgnored private var referenceScan: ScanDocument?
+    @ObservationIgnored private var referenceMeshURL: URL?
+
+    /// Puts the controller in rescan mode: the session starts from the
+    /// reference scan's world map so both scans share a coordinate frame, and
+    /// the finished mesh is diffed against the reference. Forces Room mode.
+    func loadReference(scan: ScanDocument, worldMapURL: URL, meshURL: URL) {
+        guard let data = try? Data(contentsOf: worldMapURL),
+              let map = try? NSKeyedUnarchiver.unarchivedObject(ofClass: ARWorldMap.self, from: data) else {
+            return
+        }
+        referenceMap = map
+        referenceScan = scan
+        referenceMeshURL = meshURL
+        scanMode = .room
+        isRelocalized = false
+    }
+
+    var isRescan: Bool { referenceScan != nil }
 
     // MARK: - Session lifecycle
 
@@ -143,6 +168,7 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
         }
         configuration.environmentTexturing = .none
         configuration.worldAlignment = .gravity
+        configuration.initialWorldMap = referenceMap
         return configuration
     }
 
@@ -339,11 +365,25 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
                                                         colorStore: colorStore,
                                                         simplifyCellSize: simplifyCell,
                                                         progress: makeProgressReporter())
+
+        // Rescan mode: compare against the reference now that both live in the
+        // same coordinate frame.
+        var diff: ScanDiffResult?
+        if let referenceScan, let referenceMeshURL, mesh.faceCount > 0 {
+            await MainActor.run {
+                self.phase = .processing(stage: "Comparing with \(referenceScan.name)", progress: 0.86)
+            }
+            if let referenceMesh = try? MeshData.load(from: referenceMeshURL) {
+                diff = ScanDiff.compute(new: mesh, reference: referenceMesh)
+            }
+        }
+
         await finalizeAndSave(mesh: mesh,
                               colorFraction: colorFraction,
                               duration: duration,
                               worldMapData: worldMapData,
                               captureMode: ScanMode.room.rawValue,
+                              diff: diff,
                               emptyMessage: "The captured mesh was empty after cleanup. Try scanning for a bit longer.",
                               store: store)
     }
@@ -376,6 +416,7 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
                               duration: duration,
                               worldMapData: worldMapData,
                               captureMode: ScanMode.detail.rawValue,
+                              diff: nil,
                               emptyMessage: "The detail capture was empty after cleanup. Move a little closer and circle the subject.",
                               store: store)
     }
@@ -385,6 +426,7 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
                                  duration: TimeInterval,
                                  worldMapData: Data?,
                                  captureMode: String,
+                                 diff: ScanDiffResult?,
                                  emptyMessage: String,
                                  store: ScanStore) async {
         guard mesh.faceCount > 0 else {
@@ -403,13 +445,29 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
             self.phase = .processing(stage: "Saving scan", progress: 0.96)
         }
         do {
-            let name = "Scan " + Date().formatted(date: .abbreviated, time: .shortened)
+            let name: String
+            if let referenceScan {
+                name = referenceScan.name + " · Rescan"
+            } else {
+                name = "Scan " + Date().formatted(date: .abbreviated, time: .shortened)
+            }
+
+            var ancillary: [String: Data] = [:]
+            if let diff {
+                ancillary["diff-added.bytes"] = Data(diff.addedMask.map { $0 ? 1 : 0 })
+                ancillary["diff-removed.catmesh"] = diff.removedSubmesh.serialized()
+            }
+
             let document = try await store.save(mesh: mesh,
                                                 name: name,
                                                 duration: duration,
                                                 colorFraction: colorFraction,
                                                 captureMode: captureMode,
                                                 worldMap: worldMapData,
+                                                referenceScanId: diff != nil ? referenceScan?.id : nil,
+                                                diffAddedArea: diff?.addedArea,
+                                                diffRemovedArea: diff?.removedArea,
+                                                ancillaryFiles: ancillary,
                                                 thumbnail: thumbnail)
             await MainActor.run {
                 self.finishedDocument = document
@@ -512,6 +570,14 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
     // MARK: - ARSessionObserver
 
     func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
+        if case .normal = camera.trackingState, referenceMap != nil {
+            DispatchQueue.main.async {
+                if !self.isRelocalized {
+                    self.isRelocalized = true
+                    Haptics.success()
+                }
+            }
+        }
         let warning: String?
         switch camera.trackingState {
         case .normal:

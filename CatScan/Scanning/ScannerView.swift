@@ -36,6 +36,9 @@ struct ScannerView: View {
     @Environment(\.openURL) private var openURL
     @Environment(ScanStore.self) private var store
 
+    /// When set, this session relocalizes into the reference scan's frame and
+    /// the result is diffed against it ("Rescan & Compare").
+    var referenceScan: ScanDocument?
     let onFinished: (ScanDocument) -> Void
 
     @State private var controller = ScanSessionController()
@@ -49,7 +52,9 @@ struct ScannerView: View {
     @AppStorage("catscan.detailvolume") private var detailVolumeRaw = DetailVolume.medium.rawValue
 
     private var detail: MeshDetail { MeshDetail(rawValue: detailRaw) ?? .maximum }
-    private var scanMode: ScanMode { ScanMode(rawValue: scanModeRaw) ?? .room }
+    private var storedScanMode: ScanMode { ScanMode(rawValue: scanModeRaw) ?? .room }
+    /// Rescans always run in Room mode so the diff compares like with like.
+    private var scanMode: ScanMode { referenceScan != nil ? .room : storedScanMode }
     private var detailVolume: DetailVolume { DetailVolume(rawValue: detailVolumeRaw) ?? .medium }
 
     var body: some View {
@@ -60,7 +65,10 @@ struct ScannerView: View {
                                  classify: classify,
                                  simplifyCell: detail.cellSize,
                                  scanMode: scanMode,
-                                 detailVolume: detailVolume)
+                                 detailVolume: detailVolume,
+                                 referenceScan: referenceScan,
+                                 referenceWorldMapURL: referenceScan.map { store.worldMapURL(for: $0) },
+                                 referenceMeshURL: referenceScan.map { store.meshURL(for: $0) })
                     .ignoresSafeArea()
             } else {
                 Color.black.ignoresSafeArea()
@@ -145,7 +153,7 @@ struct ScannerView: View {
                         controller.toggleTorch()
                     }
                 }
-                if !isScanning {
+                if !isScanning, referenceScan == nil {
                     CircleIconButton(systemImage: "gearshape.fill") { showOptions = true }
                 }
             }
@@ -154,6 +162,16 @@ struct ScannerView: View {
             if isScanning {
                 statsChip
                     .padding(.top, 6)
+            }
+
+            if referenceScan != nil, !controller.isRelocalized {
+                Label("Point at an area from the original scan…", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.footnote.weight(.medium))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.blue.opacity(0.85), in: Capsule())
+                    .foregroundStyle(.white)
+                    .padding(.top, 8)
             }
 
             if controller.overlayMode == .coverage {
@@ -200,9 +218,7 @@ struct ScannerView: View {
                 .padding(.bottom, 30)
             } else {
                 VStack(spacing: 14) {
-                    Text(scanMode == .detail
-                         ? "Detail mode: aim at your subject — the capture box appears when you start."
-                         : "Move slowly and keep the mesh overlay growing.")
+                    Text(hintText)
                         .font(.footnote)
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.white.opacity(0.85))
@@ -212,17 +228,29 @@ struct ScannerView: View {
                     Button {
                         controller.beginScan()
                     } label: {
-                        Label("Start Scanning", systemImage: "record.circle")
+                        Label(referenceScan == nil ? "Start Scanning" : "Start Rescan", systemImage: "record.circle")
                             .font(.headline)
                             .padding(.horizontal, 34)
                             .padding(.vertical, 16)
-                            .background(Color.accentColor, in: Capsule())
+                            .background(controller.isRelocalized ? Color.accentColor : Color.gray, in: Capsule())
                             .foregroundStyle(.black)
                     }
+                    .disabled(!controller.isRelocalized)
                 }
                 .padding(.bottom, 30)
             }
         }
+    }
+
+    private var hintText: String {
+        if referenceScan != nil {
+            return controller.isRelocalized
+                ? "Locked on! Re-scan the areas you want to compare."
+                : "Walk to where the original scan started so CatScan can align to it."
+        }
+        return scanMode == .detail
+            ? "Detail mode: aim at your subject — the capture box appears when you start."
+            : "Move slowly and keep the mesh overlay growing."
     }
 
     private var statsChip: some View {

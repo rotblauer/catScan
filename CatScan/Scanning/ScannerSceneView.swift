@@ -14,6 +14,9 @@ struct ScannerSceneView: UIViewRepresentable {
     let simplifyCell: Float?
     let scanMode: ScanMode
     let detailVolume: DetailVolume
+    var referenceScan: ScanDocument?
+    var referenceWorldMapURL: URL?
+    var referenceMeshURL: URL?
 
     func makeUIView(context: Context) -> ARSCNView {
         let view = ARSCNView(frame: .zero)
@@ -30,6 +33,11 @@ struct ScannerSceneView: UIViewRepresentable {
         controller.simplifyCellSize = simplifyCell
         controller.scanMode = scanMode
         controller.detailVolume = detailVolume
+        if let referenceScan, let referenceWorldMapURL, let referenceMeshURL {
+            controller.loadReference(scan: referenceScan,
+                                     worldMapURL: referenceWorldMapURL,
+                                     meshURL: referenceMeshURL)
+        }
         controller.startSession()
 
         let coaching = ARCoachingOverlayView()

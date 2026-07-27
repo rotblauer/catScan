@@ -25,12 +25,15 @@ struct SceneKitViewer: UIViewRepresentable {
     let mode: ViewerDisplayMode
     let colorScheme: ColorScheme
     let proxy: SCNViewProxy
+    /// Present on rescans: powers the Changes display mode.
+    var diff: (added: [Bool], removed: MeshData)?
 
     final class Coordinator {
         var modelPivot: SCNNode?
         var currentMode: ViewerDisplayMode?
         var currentScheme: ColorScheme?
         var geometryCache: [ViewerDisplayMode: SCNGeometry] = [:]
+        var removedGhost: SCNNode?
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -67,15 +70,39 @@ struct SceneKitViewer: UIViewRepresentable {
             let geometry: SCNGeometry
             if let cached = coordinator.geometryCache[mode] {
                 geometry = cached
+            } else if mode == .changes, let diff {
+                geometry = SceneKitSupport.changesGeometry(mesh: mesh, addedMask: diff.added)
+                coordinator.geometryCache[mode] = geometry
             } else {
                 geometry = SceneKitSupport.geometry(for: mesh, mode: mode)
                 coordinator.geometryCache[mode] = geometry
             }
             coordinator.modelPivot?.childNodes.first?.geometry = geometry
+            updateRemovedGhost(coordinator: coordinator)
         }
         if coordinator.currentScheme != colorScheme {
             coordinator.currentScheme = colorScheme
             view.scene?.background.contents = AppGradients.viewerBackground(dark: colorScheme == .dark)
+        }
+    }
+
+    /// The red removed-geometry overlay rides along only in Changes mode. It
+    /// shares the model node's parent, so the pivot's centering translation
+    /// applies to both (the diff lives in the same world frame as the mesh).
+    private func updateRemovedGhost(coordinator: Coordinator) {
+        if mode == .changes, let diff {
+            if coordinator.removedGhost == nil {
+                coordinator.removedGhost = SceneKitSupport.removedGhostNode(removed: diff.removed)
+                if let ghost = coordinator.removedGhost,
+                   let model = coordinator.modelPivot?.childNodes.first {
+                    ghost.position = model.position
+                }
+            }
+            if let ghost = coordinator.removedGhost, ghost.parent == nil {
+                coordinator.modelPivot?.addChildNode(ghost)
+            }
+        } else {
+            coordinator.removedGhost?.removeFromParentNode()
         }
     }
 }
