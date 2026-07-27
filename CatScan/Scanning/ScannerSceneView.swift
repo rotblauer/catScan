@@ -14,6 +14,7 @@ struct ScannerSceneView: UIViewRepresentable {
     let simplifyCell: Float?
     let scanMode: ScanMode
     let detailVolume: DetailVolume
+    let momentMaxFrames: Int
     var referenceScan: ScanDocument?
     var referenceWorldMapURL: URL?
     var referenceMeshURL: URL?
@@ -33,6 +34,7 @@ struct ScannerSceneView: UIViewRepresentable {
         controller.simplifyCellSize = simplifyCell
         controller.scanMode = scanMode
         controller.detailVolume = detailVolume
+        controller.momentMaxFrames = momentMaxFrames
         if let referenceScan, let referenceWorldMapURL, let referenceMeshURL {
             controller.loadReference(scan: referenceScan,
                                      worldMapURL: referenceWorldMapURL,

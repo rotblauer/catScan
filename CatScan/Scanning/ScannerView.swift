@@ -1,5 +1,26 @@
 import SwiftUI
 
+/// How long a Moment may record.
+enum MomentLength: String, CaseIterable, Identifiable {
+    case ten, thirty, sixty
+
+    var id: String { rawValue }
+
+    var seconds: Int {
+        switch self {
+        case .ten: return 10
+        case .thirty: return 30
+        case .sixty: return 60
+        }
+    }
+
+    var label: String { "\(seconds) s" }
+
+    var maxFrames: Int {
+        seconds * Int(ScanSessionController.momentFPS)
+    }
+}
+
 /// Mesh resolution applied during post-processing.
 enum MeshDetail: String, CaseIterable, Identifiable {
     case maximum, balanced, compact
@@ -50,7 +71,9 @@ struct ScannerView: View {
     @AppStorage("catscan.detail") private var detailRaw = MeshDetail.maximum.rawValue
     @AppStorage("catscan.scanmode") private var scanModeRaw = ScanMode.room.rawValue
     @AppStorage("catscan.detailvolume") private var detailVolumeRaw = DetailVolume.medium.rawValue
+    @AppStorage("catscan.momentlength") private var momentLengthRaw = MomentLength.ten.rawValue
 
+    private var momentLength: MomentLength { MomentLength(rawValue: momentLengthRaw) ?? .ten }
     private var detail: MeshDetail { MeshDetail(rawValue: detailRaw) ?? .maximum }
     private var storedScanMode: ScanMode { ScanMode(rawValue: scanModeRaw) ?? .room }
     /// Rescans always run in Room mode so the diff compares like with like.
@@ -66,6 +89,7 @@ struct ScannerView: View {
                                  simplifyCell: detail.cellSize,
                                  scanMode: scanMode,
                                  detailVolume: detailVolume,
+                                 momentMaxFrames: momentLength.maxFrames,
                                  referenceScan: referenceScan,
                                  referenceWorldMapURL: referenceScan.map { store.worldMapURL(for: $0) },
                                  referenceMeshURL: referenceScan.map { store.meshURL(for: $0) })
@@ -101,14 +125,16 @@ struct ScannerView: View {
                              classify: $classify,
                              detailRaw: $detailRaw,
                              scanModeRaw: $scanModeRaw,
-                             detailVolumeRaw: $detailVolumeRaw)
+                             detailVolumeRaw: $detailVolumeRaw,
+                             momentLengthRaw: $momentLengthRaw)
                 .presentationDetents([.medium, .large])
                 .onDisappear {
                     controller.applySettingsAndRestart(colorize: colorize,
                                                        classify: classify,
                                                        simplifyCell: detail.cellSize,
                                                        mode: scanMode,
-                                                       volume: detailVolume)
+                                                       volume: detailVolume,
+                                                       momentFrames: momentLength.maxFrames)
                 }
         }
         .alert("Discard this scan?", isPresented: $confirmDiscard) {
@@ -259,7 +285,7 @@ struct ScannerView: View {
         case .detail:
             return "Detail mode: aim at your subject — the capture box appears when you start."
         case .moment:
-            return "Moment mode: film up to 10 seconds of moving 3D — hold steady or orbit slowly."
+            return "Moment mode: film up to \(momentLength.seconds) seconds of moving 3D — hold steady or orbit slowly."
         case .room:
             return "Move slowly and keep the mesh overlay growing."
         }
@@ -270,7 +296,7 @@ struct ScannerView: View {
             Label(controller.stats.elapsed.clockString, systemImage: "timer")
             switch scanMode {
             case .moment:
-                Label("\(controller.stats.momentFrames)/\(ScanSessionController.momentMaxFrames) fr", systemImage: "film")
+                Label("\(controller.stats.momentFrames)/\(controller.momentMaxFrames) fr", systemImage: "film")
                 Label("\(controller.stats.momentPoints.abbreviated) pts", systemImage: "circle.dotted")
             case .detail:
                 Label("\((controller.stats.tsdfBricks * 512).abbreviated) vox", systemImage: "cube.fill")
@@ -373,6 +399,7 @@ struct ScanOptionsSheet: View {
     @Binding var detailRaw: String
     @Binding var scanModeRaw: String
     @Binding var detailVolumeRaw: String
+    @Binding var momentLengthRaw: String
 
     var body: some View {
         NavigationStack {
@@ -392,6 +419,14 @@ struct ScanOptionsSheet: View {
                         }
                         .pickerStyle(.segmented)
                     }
+                    if scanModeRaw == ScanMode.moment.rawValue {
+                        Picker("Length", selection: $momentLengthRaw) {
+                            ForEach(MomentLength.allCases) { length in
+                                Text(length.label).tag(length.rawValue)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                    }
                 } header: {
                     Text("Capture mode")
                 } footer: {
@@ -399,7 +434,7 @@ struct ScanOptionsSheet: View {
                         Text("Detail fuses raw depth frames inside a fixed box for 4–8 mm precision — far finer than ARKit's mesh. " +
                              (DetailVolume(rawValue: detailVolumeRaw) ?? .medium).note)
                     } else if scanModeRaw == ScanMode.moment.rawValue {
-                        Text("Moment records a short volumetric video — a moving 3D point cloud you can orbit during playback and export as a spatial replay. Up to 10 seconds.")
+                        Text("Moment records a volumetric video — a moving 3D point cloud you can orbit during playback and export as a spatial replay. Roughly 25 MB of storage per 10 seconds.")
                     } else {
                         Text("Room uses ARKit's scene mesh — unlimited size, ~2–5 cm features. Switch to Detail for small subjects.")
                     }

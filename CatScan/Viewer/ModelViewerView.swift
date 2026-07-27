@@ -30,6 +30,7 @@ struct ModelViewerView: View {
     @State private var turntable: TurntableRenderer?
     @State private var momentVideo: MomentVideoRenderer?
     @State private var showTurntable = false
+    @State private var showReplayComposer = false
 
     /// Live copy so renames show immediately.
     private var currentDocument: ScanDocument {
@@ -102,6 +103,13 @@ struct ModelViewerView: View {
             ScanInfoSheet(document: currentDocument)
                 .presentationDetents([.medium, .large])
         }
+        .sheet(isPresented: $showReplayComposer) {
+            if let momentClip {
+                ReplayComposerView(clip: momentClip) { path, loops in
+                    renderReplay(path: path, loops: loops)
+                }
+            }
+        }
         .sheet(isPresented: $showTurntable) {
             RenderProgressSheet(title: currentDocument.isMoment ? "Rendering Spatial Replay" : "Rendering Turntable",
                                 progress: turntable?.progress ?? momentVideo?.progress ?? 0) {
@@ -168,7 +176,7 @@ struct ModelViewerView: View {
     private var momentControls: some View {
         HStack(spacing: 0) {
             viewerAction("Photo", systemImage: "camera.fill", action: saveSnapshot)
-            viewerAction("Video", systemImage: "arrow.triangle.2.circlepath.camera.fill", action: saveMomentVideo)
+            viewerAction("Video", systemImage: "arrow.triangle.2.circlepath.camera.fill") { showReplayComposer = true }
             viewerAction("Info", systemImage: "info.circle") { showInfo = true }
         }
         .padding(.horizontal, 14)
@@ -177,14 +185,14 @@ struct ModelViewerView: View {
         .background(.ultraThinMaterial)
     }
 
-    private func saveMomentVideo() {
+    private func renderReplay(path: ReplayCameraPath, loops: Int) {
         guard let momentClip else { return }
         let renderer = MomentVideoRenderer()
         momentVideo = renderer
         showTurntable = true
         Task {
             do {
-                let url = try await renderer.render(clip: momentClip)
+                let url = try await renderer.render(clip: momentClip, path: path, loops: loops)
                 try await PhotoSaver.save(videoAt: url)
                 try? FileManager.default.removeItem(at: url)
                 showTurntable = false
@@ -230,6 +238,11 @@ struct ModelViewerView: View {
                 momentClip = try await Task.detached(priority: .userInitiated) {
                     try store.loadMomentClip(for: doc)
                 }.value
+                #if DEBUG
+                if DebugAutomation.wantsOpenReplay {
+                    showReplayComposer = true
+                }
+                #endif
                 return
             }
             let loaded = try await Task.detached(priority: .userInitiated) {

@@ -18,6 +18,10 @@ enum DebugAutomation {
         ProcessInfo.processInfo.arguments.contains("-catscanOpenFirst")
     }
 
+    static var wantsOpenReplay: Bool {
+        ProcessInfo.processInfo.arguments.contains("-catscanOpenReplay")
+    }
+
     static func runIfRequested(store: ScanStore) {
         guard ProcessInfo.processInfo.arguments.contains("-catscanAutoTest") else { return }
         Task.detached(priority: .userInitiated) {
@@ -198,8 +202,13 @@ enum DebugAutomation {
         }
 
         do {
+            // Custom tilted-axis path exercises the quaternion camera math.
+            var path = ReplayCameraPath.standard(for: clip)
+            path.axis = simd_normalize(SIMD3<Float>(1, 1, 0))
+            path.degreesPerSecond = 60
             let renderer = MomentVideoRenderer()
             let url = try await renderer.render(clip: clip,
+                                                path: path,
                                                 size: CGSize(width: 360, height: 360),
                                                 fps: 12,
                                                 loops: 1)
@@ -208,6 +217,22 @@ enum DebugAutomation {
             lines.append("moment-video: ok bytes=\((attributes?[.size] as? Int) ?? -1)")
         } catch {
             lines.append("moment-video: FAIL \(error)")
+        }
+
+        do {
+            // Zero-rate path = locked tripod shot.
+            var still = ReplayCameraPath.standard(for: clip)
+            still.degreesPerSecond = 0
+            let url = try await MomentVideoRenderer().render(clip: clip,
+                                                             path: still,
+                                                             size: CGSize(width: 240, height: 240),
+                                                             fps: 8,
+                                                             loops: 1)
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            try? FileManager.default.removeItem(at: url)
+            lines.append("moment-video-still: ok bytes=\((attributes?[.size] as? Int) ?? -1)")
+        } catch {
+            lines.append("moment-video-still: FAIL \(error)")
         }
 
         do {

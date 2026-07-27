@@ -91,7 +91,6 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
     }
 
     static let momentFPS: Double = 15
-    static let momentMaxFrames = 150   // 10 seconds
 
     var phase: Phase = .ready
     var stats = LiveStats()
@@ -133,6 +132,7 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
     @ObservationIgnored var simplifyCellSize: Float?
     @ObservationIgnored var scanMode: ScanMode = .room
     @ObservationIgnored var detailVolume: DetailVolume = .medium
+    @ObservationIgnored var momentMaxFrames = 150
 
     // Rescan-and-compare state.
     @ObservationIgnored private var referenceMap: ARWorldMap?
@@ -190,13 +190,14 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
     }
 
     func applySettingsAndRestart(colorize: Bool, classify: Bool, simplifyCell: Float?,
-                                 mode: ScanMode, volume: DetailVolume) {
+                                 mode: ScanMode, volume: DetailVolume, momentFrames maxFrames: Int) {
         guard phase == .ready else { return }
         colorizeEnabled = colorize
         classifyEnabled = classify
         simplifyCellSize = simplifyCell
         scanMode = mode
         detailVolume = volume
+        momentMaxFrames = maxFrames
         if overlayMode == .coverage, !colorize {
             overlayMode = .mesh
         }
@@ -617,7 +618,7 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
 
         if scanMode == .moment {
             if frame.timestamp - lastMomentCapture >= 1.0 / Self.momentFPS,
-               momentFrames.count < Self.momentMaxFrames,
+               momentFrames.count < momentMaxFrames,
                let points = DepthColorSampler.collectPoints(frame: frame) {
                 lastMomentCapture = frame.timestamp
                 let start = momentStartTimestamp ?? frame.timestamp
@@ -626,7 +627,7 @@ final class ScanSessionController: NSObject, ARSessionDelegate {
                                                 positions: points.positions,
                                                 colors: points.colors))
                 momentPointTotal += points.positions.count
-                if momentFrames.count >= Self.momentMaxFrames {
+                if momentFrames.count >= momentMaxFrames {
                     DispatchQueue.main.async { self.momentLimitReached = true }
                 }
             }
